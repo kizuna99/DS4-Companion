@@ -1,0 +1,6 @@
+{
+  "name": "DS4 Companion",
+  "description": "Native Android companion for Sony DualShock 4 (PS4) controller connection, RGB light bar control, battery monitoring, real-time input testing, and diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

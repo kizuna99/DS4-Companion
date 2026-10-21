@@ -1,0 +1,51 @@
+<resources>
+    <string name="app_name">DS4 Companion</string>
+    <string name="tagline">Sony DualShock 4 Controller Hub</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_lightbar">Light Bar</string>
+    <string name="nav_tester">Input Test</string>
+    <string name="nav_diagnostics">Diagnostics</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Connection -->
+    <string name="status_connected">Connected</string>
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="action_connect">Connect</string>
+    <string name="action_disconnect">Disconnect</string>
+    <string name="action_refresh">Refresh Devices</string>
+    <string name="action_pair_bluetooth">Open Bluetooth Settings</string>
+
+    <!-- Battery -->
+    <string name="battery_title">Battery Level</string>
+    <string name="battery_charging">Charging</string>
+    <string name="battery_high">High</string>
+    <string name="battery_medium">Medium</string>
+    <string name="battery_low">Low</string>
+    <string name="battery_empty">Empty</string>
+    <string name="battery_unavailable">Battery unavailable</string>
+
+    <!-- Light Bar -->
+    <string name="lightbar_title">RGB Light Bar</string>
+    <string name="lightbar_subtitle">Hardware Light Bar Customization</string>
+    <string name="action_apply_color">Apply Color</string>
+    <string name="action_reset_color">Reset Default Blue</string>
+    <string name="color_preset_classic_blue">PlayStation Blue</string>
+    <string name="color_preset_red">Combat Red</string>
+    <string name="color_preset_green">Acid Green</string>
+    <string name="color_preset_purple">Neon Purple</string>
+    <string name="color_preset_cyan">Electric Cyan</string>
+    <string name="color_preset_yellow">Amber Yellow</string>
+    <string name="color_preset_white">Pure White</string>
+    <string name="color_preset_custom">Custom</string>
+
+    <!-- Input Tester -->
+    <string name="tester_title">Input Tester</string>
+    <string name="tester_subtitle">Real-time button &amp; analog stick telemetry</string>
+    <string name="action_reset_test">Reset Test</string>
+    <string name="tester_instructions">Press any button or tilt the analog sticks on your DualShock 4 controller to verify input signals.</string>
+
+    <!-- Diagnostics -->
+    <string name="diagnostics_title">Controller Diagnostics</string>
+    <string name="action_clear_diagnostics">Clear Test Results</string>
+</resources>
