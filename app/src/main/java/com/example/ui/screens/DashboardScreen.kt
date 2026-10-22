@@ -101,6 +101,7 @@ fun DashboardScreen(
     val lightBarColor by viewModel.lightBarColor.collectAsStateWithLifecycle()
     val inputState by viewModel.inputState.collectAsStateWithLifecycle()
     val isSimulation by viewModel.isSimulationMode.collectAsStateWithLifecycle()
+    val batteryInfo by viewModel.batteryState.collectAsStateWithLifecycle()
 
     var showPairingSteps by remember { mutableStateOf(false) }
 
@@ -137,7 +138,7 @@ fun DashboardScreen(
             ) {
                 // Battery Percentage Placeholder
                 BatteryPlaceholderCard(
-                    batteryInfo = currentDevice?.batteryInfo ?: BatteryInfo(),
+                    batteryInfo = batteryInfo,
                     modifier = Modifier.weight(1f)
                 )
 
@@ -287,7 +288,7 @@ private fun DashboardHeader(
     val statusColor = when (status) {
         ConnectionStatus.CONNECTED -> StatusSuccess
         ConnectionStatus.CONNECTING -> StatusWarning
-        ConnectionStatus.DISCONNECTED -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+        ConnectionStatus.DISCONNECTED -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
     }
 
     Row(
@@ -297,17 +298,23 @@ private fun DashboardHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Column {
+        Column(
+            modifier = Modifier
+                .weight(1f, fill = false)
+                .padding(end = 12.dp)
+        ) {
             Text(
-                text = "DualShock 4 Companion",
+                text = "DualShock 4",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1
             )
             Text(
                 text = "Sony PS4 Controller Hub",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1
             )
         }
 
@@ -336,7 +343,9 @@ private fun DashboardHeader(
                     },
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
-                    color = statusColor
+                    color = statusColor,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }
@@ -363,47 +372,60 @@ private fun CentralControllerIllustrationCard(
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Controller vector
+            // Clean Front-Facing Controller Vector
             DS4ControllerVector(
                 lightBarColor = lightBarColor,
                 inputState = inputState,
                 modifier = Modifier
-                    .fillMaxWidth(0.94f)
+                    .fillMaxWidth(0.96f)
                     .testTag("dashboard_controller_vector")
             )
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
-            // Controller banner strip
+            // Controller Color Swatch & Action Strip
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(14.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                    .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f), RoundedCornerShape(14.dp))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
-                            .size(14.dp)
+                            .size(18.dp)
                             .clip(CircleShape)
                             .background(lightBarColor.toComposeColor())
-                            .border(1.dp, Color.White.copy(alpha = 0.6f), CircleShape)
+                            .border(1.5.dp, Color.White.copy(alpha = 0.8f), CircleShape)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Light Bar: ${lightBarColor.toHex()}",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = "Light Bar Color",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = lightBarColor.toHex(),
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
 
-                TextButton(
+                Button(
                     onClick = onNavigateToLightBar,
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    shape = RoundedCornerShape(10.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                 ) {
+                    Icon(imageVector = Icons.Default.Palette, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text("Change Color")
                 }
             }
@@ -416,20 +438,22 @@ private fun BatteryPlaceholderCard(
     batteryInfo: BatteryInfo,
     modifier: Modifier = Modifier
 ) {
-    val statusColor = when (batteryInfo.status) {
-        BatteryStatus.CHARGING -> StatusInfo
-        BatteryStatus.HIGH -> StatusSuccess
-        BatteryStatus.MEDIUM -> StatusWarning
-        BatteryStatus.LOW, BatteryStatus.EMPTY -> StatusDanger
-        BatteryStatus.UNAVAILABLE -> MaterialTheme.colorScheme.onSurfaceVariant
+    val percentage = batteryInfo.percentage
+    val isCharging = batteryInfo.isCharging == true
+
+    val statusColor = when {
+        isCharging -> StatusInfo
+        percentage == null -> MaterialTheme.colorScheme.onSurfaceVariant
+        percentage >= 60 -> StatusSuccess
+        percentage >= 25 -> StatusWarning
+        else -> StatusDanger
     }
 
     val animatedColor by animateColorAsState(targetValue = statusColor, label = "dashboard_batt_color")
-    val percentage = batteryInfo.percentage
 
     Card(
         modifier = modifier
-            .height(130.dp)
+            .height(138.dp)
             .testTag("dashboard_battery_placeholder"),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -448,11 +472,12 @@ private fun BatteryPlaceholderCard(
                 Text(
                     text = "Battery",
                     style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Icon(
                     imageVector = when {
-                        batteryInfo.isCharging -> Icons.Default.BatteryChargingFull
+                        isCharging -> Icons.Default.BatteryChargingFull
                         percentage == null -> Icons.Default.BatteryUnknown
                         percentage >= 80 -> Icons.Default.BatteryFull
                         percentage >= 50 -> Icons.Default.Battery5Bar
@@ -466,7 +491,6 @@ private fun BatteryPlaceholderCard(
                 )
             }
 
-            // Value
             Column {
                 Text(
                     text = if (percentage != null) "$percentage%" else "Unavailable",
@@ -475,13 +499,19 @@ private fun BatteryPlaceholderCard(
                     color = if (percentage != null) animatedColor else MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = if (batteryInfo.isCharging) "Charging" else batteryInfo.status.label,
+                    text = when {
+                        isCharging -> "Charging"
+                        batteryInfo.isStale && percentage != null -> "Last known reading"
+                        batteryInfo.isCharging == false -> "Not Charging"
+                        batteryInfo.status == BatteryStatus.UNAVAILABLE -> "Unavailable on Bluetooth HID"
+                        else -> "Hardware telemetry active"
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
             }
 
-            // Progress bar
             if (percentage != null) {
                 LinearProgressIndicator(
                     progress = { percentage / 100f },
@@ -498,7 +528,7 @@ private fun BatteryPlaceholderCard(
                         .fillMaxWidth()
                         .height(6.dp)
                         .clip(RoundedCornerShape(3.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                 )
             }
         }
@@ -515,7 +545,7 @@ private fun ConnectionTypePlaceholderCard(
 
     Card(
         modifier = modifier
-            .height(130.dp)
+            .height(138.dp)
             .testTag("dashboard_connection_type_placeholder"),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
@@ -534,6 +564,7 @@ private fun ConnectionTypePlaceholderCard(
                 Text(
                     text = "Connection",
                     style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Icon(
@@ -551,33 +582,46 @@ private fun ConnectionTypePlaceholderCard(
 
             Column {
                 Text(
-                    text = transport?.displayName ?: if (connectionStatus == ConnectionStatus.CONNECTING) "Scanning…" else "None",
+                    text = device?.name ?: if (connectionStatus == ConnectionStatus.CONNECTING) "Scanning…" else "Not Connected",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
+                    maxLines = 1,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 Text(
-                    text = if (device != null) {
-                        "VID 0x${Integer.toHexString(device.vendorId ?: 0x054C).uppercase()}"
-                    } else {
-                        "No controller"
+                    text = when (connectionStatus) {
+                        ConnectionStatus.CONNECTED -> "${transport?.displayName ?: "Unknown"} • Active"
+                        ConnectionStatus.CONNECTING -> "Connecting…"
+                        ConnectionStatus.DISCONNECTED -> "No active controller"
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
                 )
             }
 
-            // Protocol pill
             Surface(
                 shape = RoundedCornerShape(6.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant
+                color = when (connectionStatus) {
+                    ConnectionStatus.CONNECTED -> StatusSuccess.copy(alpha = 0.15f)
+                    ConnectionStatus.CONNECTING -> StatusWarning.copy(alpha = 0.15f)
+                    ConnectionStatus.DISCONNECTED -> MaterialTheme.colorScheme.surfaceVariant
+                }
             ) {
                 Text(
-                    text = if (transport == TransportType.USB_OTG) "HID Report 0x05" else if (transport == TransportType.BLUETOOTH) "BT HID System" else "Awaiting pairing",
+                    text = when (connectionStatus) {
+                        ConnectionStatus.CONNECTED -> "CONNECTED"
+                        ConnectionStatus.CONNECTING -> "SEARCHING"
+                        ConnectionStatus.DISCONNECTED -> "STANDBY"
+                    },
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
                     style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    fontWeight = FontWeight.Bold,
+                    color = when (connectionStatus) {
+                        ConnectionStatus.CONNECTED -> StatusSuccess
+                        ConnectionStatus.CONNECTING -> StatusWarning
+                        ConnectionStatus.DISCONNECTED -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                 )
             }
         }
@@ -602,6 +646,7 @@ private fun DashboardActionCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
+            // Action Buttons Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -610,7 +655,7 @@ private fun DashboardActionCard(
                     OutlinedButton(
                         onClick = onDisconnect,
                         modifier = Modifier
-                            .weight(1f)
+                            .weight(1.3f)
                             .testTag("dashboard_disconnect_button"),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusDanger)
                     ) {
@@ -620,7 +665,7 @@ private fun DashboardActionCard(
                     Button(
                         onClick = onConnect,
                         modifier = Modifier
-                            .weight(1f)
+                            .weight(1.3f)
                             .testTag("dashboard_connect_button")
                     ) {
                         Icon(imageVector = Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -631,7 +676,9 @@ private fun DashboardActionCard(
 
                 FilledTonalButton(
                     onClick = onOpenBluetoothSettings,
-                    modifier = Modifier.testTag("dashboard_bluetooth_button")
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("dashboard_bluetooth_button")
                 ) {
                     Icon(imageVector = Icons.Default.Bluetooth, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
@@ -639,26 +686,45 @@ private fun DashboardActionCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(12.dp))
 
-            // Simulation switch
+            // Device Simulation Mode Card (clearly distinguishing simulated data from actual hardware readings)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .background(
+                        if (isSimulation) StatusWarning.copy(alpha = 0.12f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+                    )
+                    .border(
+                        1.dp,
+                        if (isSimulation) StatusWarning.copy(alpha = 0.45f)
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                        RoundedCornerShape(12.dp)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "Device Simulation Mode",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "(Testing Only)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = StatusWarning,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                     Text(
-                        text = "Device Simulation Mode",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        text = "Simulate DS4 input events & telemetry",
+                        text = if (isSimulation) "Simulated virtual inputs active — not real hardware readings"
+                        else "Emulates virtual DS4 events when no physical controller is attached",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

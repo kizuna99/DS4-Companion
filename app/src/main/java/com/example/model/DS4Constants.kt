@@ -44,7 +44,17 @@ object DS4Constants {
     const val KEY_SHARE = KeyEvent.KEYCODE_BUTTON_SELECT
     const val KEY_OPTIONS = KeyEvent.KEYCODE_BUTTON_START
     const val KEY_PS = KeyEvent.KEYCODE_BUTTON_MODE
-    const val KEY_TOUCHPAD = KeyEvent.KEYCODE_BUTTON_10 // or general touchpad click
+    const val KEY_TOUCHPAD = KeyEvent.KEYCODE_BUTTON_10
+    const val KEY_BUTTON_TOUCH = 330 // Linux BTN_TOUCH
+    const val KEY_BUTTON_1 = KeyEvent.KEYCODE_BUTTON_1
+
+    fun isTouchpadKey(keyCode: Int): Boolean {
+        return keyCode == KEY_TOUCHPAD ||
+                keyCode == KEY_BUTTON_TOUCH ||
+                keyCode == KEY_BUTTON_1 ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_C ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_Z
+    }
 
     // Axes
     const val AXIS_LEFT_X = MotionEvent.AXIS_X

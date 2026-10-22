@@ -8,6 +8,25 @@ data class InputLogEvent(
     val value: String
 )
 
+data class TouchpadState(
+    val x: Float = 0.5f,
+    val y: Float = 0.5f,
+    val isTouching: Boolean = false,
+    val isClicked: Boolean = false,
+    val touchCount: Int = 0
+)
+
+data class MotionSensorsState(
+    val accelX: Float = 0f,
+    val accelY: Float = 9.8f,
+    val accelZ: Float = 0f,
+    val gyroX: Float = 0f,
+    val gyroY: Float = 0f,
+    val gyroZ: Float = 0f,
+    val isAvailable: Boolean = false,
+    val sensorStatus: String = "Ready"
+)
+
 data class InputState(
     // D-Pad
     val dpadUp: Boolean = false,
@@ -45,6 +64,12 @@ data class InputState(
     val buttonPs: Boolean = false,
     val buttonTouchpad: Boolean = false,
 
+    // Real-time Touchpad X/Y Telemetry
+    val touchpad: TouchpadState = TouchpadState(),
+
+    // Real-time IMU Motion Sensors (Accelerometer & Gyroscope)
+    val motionSensors: MotionSensorsState = MotionSensorsState(),
+
     // Recent telemetry log (max 20 entries)
     val recentEvents: List<InputLogEvent> = emptyList(),
 
@@ -59,7 +84,7 @@ data class InputState(
                 buttonCross || buttonCircle || buttonSquare || buttonTriangle ||
                 buttonL1 || buttonR1 || buttonL2 || buttonR2 ||
                 buttonL3 || buttonR3 ||
-                buttonShare || buttonOptions || buttonPs || buttonTouchpad
+                buttonShare || buttonOptions || buttonPs || buttonTouchpad || touchpad.isClicked
 
     val isLeftStickDeflected: Boolean
         get() = kotlin.math.abs(leftStickX) > 0.15f || kotlin.math.abs(leftStickY) > 0.15f

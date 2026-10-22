@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,28 +20,39 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DirectionsRun
 import androidx.compose.material.icons.filled.Help
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Memory
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Speed
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Vibration
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -48,6 +60,9 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.CenteringStatus
 import com.example.model.DiagnosticsState
+import com.example.model.MotionSensorsState
+import com.example.protocol.MotorSelection
+import com.example.protocol.VibrationTestResult
 import com.example.ui.theme.StatusDanger
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
@@ -57,11 +72,15 @@ import com.example.viewmodel.DS4ViewModel
 @Composable
 fun DiagnosticsScreen(
     viewModel: DS4ViewModel,
+    onNavigateBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val diagState by viewModel.diagnosticsState.collectAsStateWithLifecycle()
     val currentDevice by viewModel.currentDevice.collectAsStateWithLifecycle()
-    val connectionStatus by viewModel.connectionStatus.collectAsStateWithLifecycle()
+    val inputState by viewModel.inputState.collectAsStateWithLifecycle()
+    val vibrationResult by viewModel.vibrationResult.collectAsStateWithLifecycle()
+    val isVibrating by viewModel.isVibrating.collectAsStateWithLifecycle()
+    val isVibrationEnabled by viewModel.isVibrationEnabled.collectAsStateWithLifecycle()
 
     LazyColumn(
         modifier = modifier
@@ -70,6 +89,33 @@ fun DiagnosticsScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Optional Back Button Header
+        if (onNavigateBack != null) {
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onNavigateBack,
+                        modifier = Modifier.testTag("diagnostics_back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to Home",
+                            tint = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Controller Diagnostics",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
         // 1. Controller Hardware Specs Card
         item {
             Card(
@@ -121,7 +167,22 @@ fun DiagnosticsScreen(
             }
         }
 
-        // 2. Real-Time Stick Centering & Drift Telemetry
+        // 2. Dual-Motor Vibration Test & On/Off Toggle Card
+        item {
+            VibrationDiagnosticCard(
+                viewModel = viewModel,
+                vibrationResult = vibrationResult,
+                isVibrating = isVibrating,
+                isVibrationEnabled = isVibrationEnabled
+            )
+        }
+
+        // 3. 6-Axis Motion Sensor (IMU) Health Check
+        item {
+            MotionSensorHealthCard(sensors = inputState.motionSensors)
+        }
+
+        // 4. Real-Time Stick Centering & Drift Telemetry
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -139,37 +200,37 @@ fun DiagnosticsScreen(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = "Real-time deadzone & resting position analysis. Green indicates ideal factory centering (< 0.12).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         StickDriftPill(
-                            title = "Left Stick (L3)",
+                            title = "Left Stick (LS)",
                             status = diagState.leftStickCenteringStatus,
                             offset = diagState.leftStickDriftOffset,
                             modifier = Modifier.weight(1f)
                         )
                         StickDriftPill(
-                            title = "Right Stick (R3)",
+                            title = "Right Stick (RS)",
                             status = diagState.rightStickCenteringStatus,
                             offset = diagState.rightStickDriftOffset,
                             modifier = Modifier.weight(1f)
                         )
                     }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Offset measures stick distance from neutral (0,0) when hands are off. Less than 0.08 is factory standard deadzone.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
             }
         }
 
-        // 3. Stuck Buttons Indicator
+        // 5. Stuck Button Detector
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -178,11 +239,10 @@ fun DiagnosticsScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        val hasStuck = diagState.stuckButtons.isNotEmpty()
                         Icon(
-                            imageVector = if (hasStuck) Icons.Default.Warning else Icons.Default.CheckCircle,
+                            imageVector = if (diagState.stuckButtons.isEmpty()) Icons.Default.CheckCircle else Icons.Default.Warning,
                             contentDescription = null,
-                            tint = if (hasStuck) StatusWarning else StatusSuccess
+                            tint = if (diagState.stuckButtons.isEmpty()) StatusSuccess else StatusDanger
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
@@ -196,7 +256,7 @@ fun DiagnosticsScreen(
 
                     if (diagState.stuckButtons.isEmpty()) {
                         Text(
-                            text = "No stuck buttons detected. All inputs return to neutral properly.",
+                            text = "All buttons released normally. No stuck or unreleased inputs detected.",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -228,7 +288,7 @@ fun DiagnosticsScreen(
             }
         }
 
-        // 4. Detected Inputs Matrix in current session
+        // 6. Detected Inputs Matrix in current session
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -258,14 +318,14 @@ fun DiagnosticsScreen(
                                 Box(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        .background(StatusSuccess.copy(alpha = 0.15f))
+                                        .padding(horizontal = 10.dp, vertical = 4.dp)
                                 ) {
                                     Text(
                                         text = "✓ $item",
                                         style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.primary
+                                        fontWeight = FontWeight.Bold,
+                                        color = StatusSuccess
                                     )
                                 }
                             }
@@ -275,32 +335,29 @@ fun DiagnosticsScreen(
             }
         }
 
-        // 5. Hardware Troubleshooting Guide
+        // 7. Troubleshooting & Compatibility Guide
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(imageVector = Icons.Default.Help, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Troubleshooting & Android DS4 Quirks",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text(text = "Android Driver Reference", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     }
+
                     Spacer(modifier = Modifier.height(8.dp))
 
                     BulletPoint(
-                        title = "Input Lag over Bluetooth on older Android",
-                        desc = "Some Android Bluetooth stacks prioritize WiFi over BLE/HID polling. Toggling Bluetooth off/on or disconnecting 2.4GHz WiFi usually restores 4ms response times."
+                        title = "Input Polling Frequency",
+                        desc = "Android Bluetooth typically operates at 60-120Hz polling. If you experience high latency, disconnect other Bluetooth audio accessories."
                     )
                     BulletPoint(
                         title = "Light Bar & Battery on Bluetooth",
-                        desc = "Android security isolates Bluetooth HID output sockets to prevent unverified peripherals from injecting keystrokes. For direct hardware RGB light bar programming, USB OTG provides an unrestricted HID channel."
+                        desc = "Android 12+ supports LightsManager and InputDevice.batteryState natively. On older Android versions, connect via USB OTG for unrestricted hardware HID communication."
                     )
                     BulletPoint(
                         title = "PS Home Button Behavior",
@@ -308,6 +365,241 @@ fun DiagnosticsScreen(
                     )
                 }
             }
+        }
+    }
+}
+
+// ==========================================
+// SUBCOMPONENTS
+// ==========================================
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun VibrationDiagnosticCard(
+    viewModel: DS4ViewModel,
+    vibrationResult: VibrationTestResult?,
+    isVibrating: Boolean,
+    isVibrationEnabled: Boolean
+) {
+    var selectedMotor by remember { mutableStateOf(MotorSelection.BOTH) }
+    var selectedDurationMs by remember { mutableLongStateOf(1000L) }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("vibration_diagnostic_card"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Vibration,
+                        contentDescription = null,
+                        tint = if (isVibrating) StatusWarning else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            text = "Vibration & Haptics Test",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (isVibrating) "Motors buzzing..." else "Left (Heavy) + Right (Light) rumble",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (isVibrating) StatusWarning else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                // Option to ON/OFF vibration
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (isVibrationEnabled) "ON" else "OFF",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isVibrationEnabled) StatusSuccess else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Switch(
+                        checked = isVibrationEnabled,
+                        onCheckedChange = { viewModel.setVibrationEnabled(it) },
+                        modifier = Modifier.testTag("vibration_on_off_switch")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Motor Selector Chips
+            Text(
+                text = "Motor Selection",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                MotorSelection.values().forEach { motor ->
+                    FilterChip(
+                        selected = selectedMotor == motor,
+                        onClick = { selectedMotor = motor },
+                        label = { Text(motor.label) },
+                        modifier = Modifier.testTag("motor_chip_${motor.name.lowercase()}")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Duration Selector Chips
+            Text(
+                text = "Duration",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(500L to "500ms", 1000L to "1.0s", 2000L to "2.0s").forEach { (duration, label) ->
+                    FilterChip(
+                        selected = selectedDurationMs == duration,
+                        onClick = { selectedDurationMs = duration },
+                        label = { Text(label) },
+                        modifier = Modifier.testTag("duration_chip_$duration")
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Test Vibration Action Buttons (Start / Stop)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Button(
+                    onClick = {
+                        viewModel.testVibration(
+                            durationMs = selectedDurationMs,
+                            motor = selectedMotor
+                        )
+                    },
+                    enabled = isVibrationEnabled,
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("test_vibration_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Test Vibration")
+                }
+
+                if (isVibrating) {
+                    Button(
+                        onClick = { viewModel.stopVibration() },
+                        colors = ButtonDefaults.buttonColors(containerColor = StatusDanger),
+                        modifier = Modifier.testTag("stop_vibration_button")
+                    ) {
+                        Icon(imageVector = Icons.Default.Stop, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Stop")
+                    }
+                }
+            }
+
+            // Result Banner
+            AnimatedVisibility(visible = vibrationResult != null) {
+                vibrationResult?.let { result ->
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (result.success) StatusSuccess.copy(alpha = 0.12f) else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (result.success) Icons.Default.CheckCircle else Icons.Default.Info,
+                                contentDescription = null,
+                                tint = if (result.success) StatusSuccess else MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = result.message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MotionSensorHealthCard(sensors: MotionSensorsState) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("motion_sensor_health_card"),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Default.DirectionsRun, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Motion Sensors (IMU)",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = if (sensors.isAvailable) StatusSuccess.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant
+                ) {
+                    Text(
+                        text = if (sensors.isAvailable) "Active" else "Idle",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (sensors.isAvailable) StatusSuccess else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            DiagRow("Status", sensors.sensorStatus)
+            DiagRow("Accelerometer", "X:${String.format("%.2f", sensors.accelX)} Y:${String.format("%.2f", sensors.accelY)} Z:${String.format("%.2f", sensors.accelZ)} m/s²")
+            DiagRow("Gyroscope", "X:${String.format("%.2f", sensors.gyroX)} Y:${String.format("%.2f", sensors.gyroY)} Z:${String.format("%.2f", sensors.gyroZ)} rad/s")
         }
     }
 }

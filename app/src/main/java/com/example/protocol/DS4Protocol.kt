@@ -96,6 +96,8 @@ object DS4Protocol {
                 percentage = null,
                 status = BatteryStatus.UNAVAILABLE,
                 isCharging = isCharging,
+                lastUpdated = System.currentTimeMillis(),
+                isStale = false,
                 sourceDescription = "Invalid raw value (0x${Integer.toHexString(unsigned)})"
             )
         }
@@ -115,6 +117,8 @@ object DS4Protocol {
             percentage = percentage,
             status = status,
             isCharging = isCharging,
+            lastUpdated = System.currentTimeMillis(),
+            isStale = false,
             sourceDescription = "Hardware report byte: 0x${Integer.toHexString(unsigned)}"
         )
     }
@@ -122,19 +126,21 @@ object DS4Protocol {
     /**
      * Maps Android 12+ BatteryState capacity (0.0 to 1.0 or Float.NaN)
      */
-    fun parseAndroidBatteryState(capacity: Float, isCharging: Boolean): BatteryInfo {
+    fun parseAndroidBatteryState(capacity: Float, isCharging: Boolean?): BatteryInfo {
         if (capacity.isNaN() || capacity < 0f) {
             return BatteryInfo(
                 percentage = null,
-                status = BatteryStatus.UNAVAILABLE,
+                status = if (isCharging == true) BatteryStatus.CHARGING else BatteryStatus.UNAVAILABLE,
                 isCharging = isCharging,
+                lastUpdated = System.currentTimeMillis(),
+                isStale = false,
                 sourceDescription = "Android InputDevice reported capacity unavailable"
             )
         }
 
         val percentage = (capacity * 100).toInt().coerceIn(0, 100)
         val status = when {
-            isCharging -> BatteryStatus.CHARGING
+            isCharging == true -> BatteryStatus.CHARGING
             percentage >= 60 -> BatteryStatus.HIGH
             percentage >= 25 -> BatteryStatus.MEDIUM
             percentage >= 1 -> BatteryStatus.LOW
@@ -145,7 +151,9 @@ object DS4Protocol {
             percentage = percentage,
             status = status,
             isCharging = isCharging,
-            sourceDescription = "Android InputDevice BatteryState"
+            lastUpdated = System.currentTimeMillis(),
+            isStale = false,
+            sourceDescription = "Android InputDevice BatteryState (API 31+)"
         )
     }
 }

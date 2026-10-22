@@ -204,13 +204,6 @@ class BluetoothManager(private val context: Context) {
             val ds4List = bonded.filter { isDualShock4Device(it) }
 
             _discoveredDevices.value = ds4List
-
-            if (ds4List.isNotEmpty() && _connectedDevice.value == null) {
-                // If a paired DS4 is present, set as candidate
-                val active = ds4List.first()
-                _connectedDevice.value = active
-                _connectionState.value = ConnectionStatus.CONNECTED
-            }
             ds4List
         } catch (e: SecurityException) {
             Log.w(TAG, "Bluetooth connect permission missing", e)

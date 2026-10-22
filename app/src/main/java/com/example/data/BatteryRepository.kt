@@ -24,27 +24,56 @@ class BatteryRepository {
         BatteryInfo(
             percentage = null,
             status = BatteryStatus.UNAVAILABLE,
-            isCharging = false,
+            isCharging = null,
+            lastUpdated = System.currentTimeMillis(),
+            isStale = false,
             sourceDescription = "No battery data received"
         )
     )
     val batteryState: StateFlow<BatteryInfo> = _batteryState.asStateFlow()
 
     /**
+     * Updates the battery state from a known authoritative [BatteryInfo] report.
+     */
+    fun updateBattery(info: BatteryInfo): BatteryInfo {
+        _batteryState.value = info
+        return info
+    }
+
+    /**
+     * Checks if current telemetry is older than [maxAgeMs].
+     * If so, marks the telemetry as stale and transitions [isCharging] to null
+     * to prevent presenting an unverified charging state as current.
+     */
+    fun markStaleIfOutdated(maxAgeMs: Long = 15_000L): BatteryInfo {
+        val current = _batteryState.value
+        if (current.status == BatteryStatus.UNAVAILABLE && current.percentage == null) {
+            return current
+        }
+        val elapsed = System.currentTimeMillis() - current.lastUpdated
+        if (elapsed > maxAgeMs && !current.isStale) {
+            Log.d(TAG, "Battery telemetry stale ($elapsed ms since last report). Marking status as unknown.")
+            val staleInfo = current.copy(
+                isCharging = null,
+                isStale = true,
+                sourceDescription = "Telemetry stale (last report ${elapsed / 1000}s ago)"
+            )
+            _batteryState.value = staleInfo
+            return staleInfo
+        }
+        return current
+    }
+
+    /**
      * Extracts battery level from an Android [InputDevice].
      * Uses Android 12+ [InputDevice.getBatteryState] when available.
-     * If capacity is not reported or device is below Android 12, returns an honest unavailable status.
+     * Maps BatteryState.STATUS_CHARGING (2) -> true,
+     * STATUS_DISCHARGING (3), STATUS_NOT_CHARGING (4), STATUS_FULL (5) -> false,
+     * STATUS_UNKNOWN (1) -> null.
      */
     fun extractFromInputDevice(device: InputDevice?): BatteryInfo {
         if (device == null) {
-            val result = BatteryInfo(
-                percentage = null,
-                status = BatteryStatus.UNAVAILABLE,
-                isCharging = false,
-                sourceDescription = "No device connected"
-            )
-            _batteryState.value = result
-            return result
+            return setUnavailable("No device connected")
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -52,13 +81,23 @@ class BatteryRepository {
                 val batteryState = device.batteryState
                 val capacity = batteryState.capacity
                 val status = batteryState.status
-                // BatteryState.STATUS_CHARGING == 2, BatteryState.STATUS_FULL == 5
-                val isCharging = status == 2
+                // BatteryState constants:
+                // STATUS_UNKNOWN = 1
+                // STATUS_CHARGING = 2
+                // STATUS_DISCHARGING = 3
+                // STATUS_NOT_CHARGING = 4
+                // STATUS_FULL = 5
+                val isCharging: Boolean? = when (status) {
+                    2 -> true
+                    3, 4, 5 -> false
+                    1 -> null
+                    else -> null
+                }
 
                 if (!capacity.isNaN() && capacity >= 0f) {
                     val percentage = (capacity * 100).toInt().coerceIn(0, 100)
                     val batteryStatus = when {
-                        isCharging -> BatteryStatus.CHARGING
+                        isCharging == true -> BatteryStatus.CHARGING
                         percentage >= 60 -> BatteryStatus.HIGH
                         percentage >= 25 -> BatteryStatus.MEDIUM
                         percentage >= 1 -> BatteryStatus.LOW
@@ -68,7 +107,21 @@ class BatteryRepository {
                         percentage = percentage,
                         status = batteryStatus,
                         isCharging = isCharging,
+                        lastUpdated = System.currentTimeMillis(),
+                        isStale = false,
                         sourceDescription = "Android InputDevice BatteryState (API 31+)"
+                    )
+                    _batteryState.value = result
+                    return result
+                } else if (isCharging != null) {
+                    // Capacity is NaN but charging status is known
+                    val result = BatteryInfo(
+                        percentage = null,
+                        status = if (isCharging) BatteryStatus.CHARGING else BatteryStatus.UNAVAILABLE,
+                        isCharging = isCharging,
+                        lastUpdated = System.currentTimeMillis(),
+                        isStale = false,
+                        sourceDescription = "Android InputDevice BatteryState (Status only)"
                     )
                     _batteryState.value = result
                     return result
@@ -81,7 +134,9 @@ class BatteryRepository {
         val result = BatteryInfo(
             percentage = null,
             status = BatteryStatus.UNAVAILABLE,
-            isCharging = false,
+            isCharging = null,
+            lastUpdated = System.currentTimeMillis(),
+            isStale = false,
             sourceDescription = "Battery level not reported by OS kernel driver"
         )
         _batteryState.value = result
@@ -151,6 +206,8 @@ class BatteryRepository {
             percentage = percentage,
             status = status,
             isCharging = isCharging,
+            lastUpdated = System.currentTimeMillis(),
+            isStale = false,
             sourceDescription = "DS4 HID report (0x${Integer.toHexString(unsigned).uppercase()})"
         )
         _batteryState.value = result
@@ -164,7 +221,9 @@ class BatteryRepository {
         val info = BatteryInfo(
             percentage = null,
             status = BatteryStatus.UNAVAILABLE,
-            isCharging = false,
+            isCharging = null,
+            lastUpdated = System.currentTimeMillis(),
+            isStale = false,
             sourceDescription = reason
         )
         _batteryState.value = info
@@ -174,10 +233,10 @@ class BatteryRepository {
     /**
      * Sets simulated battery telemetry for testing and simulation mode.
      */
-    fun setSimulatedBattery(percentage: Int, isCharging: Boolean = false): BatteryInfo {
+    fun setSimulatedBattery(percentage: Int, isCharging: Boolean? = false): BatteryInfo {
         val clamped = percentage.coerceIn(0, 100)
         val status = when {
-            isCharging -> BatteryStatus.CHARGING
+            isCharging == true -> BatteryStatus.CHARGING
             clamped >= 60 -> BatteryStatus.HIGH
             clamped >= 25 -> BatteryStatus.MEDIUM
             clamped >= 1 -> BatteryStatus.LOW
@@ -187,6 +246,8 @@ class BatteryRepository {
             percentage = clamped,
             status = status,
             isCharging = isCharging,
+            lastUpdated = System.currentTimeMillis(),
+            isStale = false,
             sourceDescription = "Simulation Telemetry"
         )
         _batteryState.value = info

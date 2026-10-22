@@ -9,7 +9,12 @@ import androidx.lifecycle.ViewModelProvider
 import com.example.data.DS4InputRepository
 import com.example.model.DS4DeviceInfo
 import com.example.model.LightBarColor
+import com.example.protocol.MotorSelection
+import com.example.protocol.VibrationController
+import com.example.protocol.VibrationTestResult
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class DS4ViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -26,6 +31,7 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
     val inputState = repository.inputState
     val diagnosticsState = repository.diagnosticsState
     val isSimulationMode = repository.isSimulationMode
+    val batteryState = repository.batteryState
 
     // Bluetooth-specific flows
     val bluetoothConnectionState = bluetoothManager.connectionState
@@ -37,9 +43,57 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
     fun stopBluetoothScan() = bluetoothManager.stopScan()
     fun connectBluetooth(device: android.bluetooth.BluetoothDevice) = bluetoothManager.connect(device)
 
+    // Vibration controller
+    val vibrationController = VibrationController(application.applicationContext)
+    private val _vibrationResult = MutableStateFlow<VibrationTestResult?>(null)
+    val vibrationResult: StateFlow<VibrationTestResult?> = _vibrationResult.asStateFlow()
+
+    val isVibrating: StateFlow<Boolean> = vibrationController.isVibrating
+
+    private val _isVibrationEnabled = MutableStateFlow(true)
+    val isVibrationEnabled: StateFlow<Boolean> = _isVibrationEnabled.asStateFlow()
+
+    fun toggleVibrationEnabled() {
+        _isVibrationEnabled.value = !_isVibrationEnabled.value
+        if (!_isVibrationEnabled.value) {
+            stopVibration()
+        }
+    }
+
+    fun setVibrationEnabled(enabled: Boolean) {
+        _isVibrationEnabled.value = enabled
+        if (!enabled) {
+            stopVibration()
+        }
+    }
+
+    fun testVibration(
+        durationMs: Long = 1000L,
+        motor: MotorSelection = MotorSelection.BOTH
+    ) {
+        if (!_isVibrationEnabled.value) {
+            _vibrationResult.value = VibrationTestResult(
+                false,
+                "Vibration is currently disabled. Toggle the Vibration switch ON to test rumble."
+            )
+            return
+        }
+        val device = currentDevice.value
+        val result = vibrationController.testVibration(durationMs, motor, device)
+        _vibrationResult.value = result
+    }
+
+    fun stopVibration() {
+        val device = currentDevice.value
+        val result = vibrationController.stopVibration(device)
+        _vibrationResult.value = result
+    }
+
     override fun onCleared() {
         super.onCleared()
         bluetoothManager.release()
+        vibrationController.stopAll()
+        repository.motionSensorManager.release()
     }
 
     fun refresh() {
@@ -70,8 +124,8 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
         repository.clearDiagnostics()
     }
 
-    fun toggleSimulation(enable: Boolean) {
-        repository.toggleSimulationMode(enable)
+    fun setSimulationMode(enabled: Boolean) {
+        repository.setSimulationMode(enabled)
     }
 
     fun handleKeyEvent(event: KeyEvent): Boolean {
@@ -82,10 +136,26 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
         return repository.processMotionEvent(event)
     }
 
-    class Factory(private val app: Application) : ViewModelProvider.Factory {
-        @Suppress("UNCHECKED_CAST")
-        override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return DS4ViewModel(app) as T
+    fun handleTouchEvent(event: MotionEvent): Boolean {
+        return repository.processTouchEvent(event)
+    }
+
+    fun toggleSimulation(enabled: Boolean? = null) {
+        val target = enabled ?: !repository.isSimulationMode.value
+        repository.setSimulationMode(target)
+    }
+
+    companion object {
+        fun Factory(application: Application): ViewModelProvider.Factory = DS4ViewModelFactory(application)
+    }
+}
+
+class DS4ViewModelFactory(private val application: Application) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(DS4ViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return DS4ViewModel(application) as T
         }
+        throw IllegalArgumentException("Unknown ViewModel class")
     }
 }

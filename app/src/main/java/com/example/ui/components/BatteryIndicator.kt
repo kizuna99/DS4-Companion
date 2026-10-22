@@ -50,12 +50,14 @@ fun BatteryIndicator(
     batteryInfo: BatteryInfo,
     modifier: Modifier = Modifier
 ) {
-    val statusColor = when (batteryInfo.status) {
-        BatteryStatus.CHARGING -> StatusInfo
-        BatteryStatus.HIGH -> StatusSuccess
-        BatteryStatus.MEDIUM -> StatusWarning
-        BatteryStatus.LOW, BatteryStatus.EMPTY -> StatusDanger
-        BatteryStatus.UNAVAILABLE -> MaterialTheme.colorScheme.onSurfaceVariant
+    val isCharging = batteryInfo.isCharging == true
+    val statusColor = when {
+        isCharging -> StatusInfo
+        batteryInfo.percentage == null -> MaterialTheme.colorScheme.onSurfaceVariant
+        batteryInfo.status == BatteryStatus.HIGH -> StatusSuccess
+        batteryInfo.status == BatteryStatus.MEDIUM -> StatusWarning
+        batteryInfo.status == BatteryStatus.LOW, batteryInfo.status == BatteryStatus.EMPTY -> StatusDanger
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     val animatedColor by animateColorAsState(targetValue = statusColor, label = "battery_color")
@@ -89,7 +91,7 @@ fun BatteryIndicator(
                         contentAlignment = Alignment.Center
                     ) {
                         val icon = when {
-                            batteryInfo.isCharging -> Icons.Default.BatteryChargingFull
+                            isCharging -> Icons.Default.BatteryChargingFull
                             percentage == null -> Icons.Default.BatteryUnknown
                             percentage >= 80 -> Icons.Default.BatteryFull
                             percentage >= 50 -> Icons.Default.Battery5Bar
@@ -112,8 +114,10 @@ fun BatteryIndicator(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = if (batteryInfo.isCharging) {
+                            text = if (isCharging) {
                                 "Charging (${percentage ?: "?"}%)"
+                            } else if (batteryInfo.isStale && percentage != null) {
+                                "Last Known ($percentage%)"
                             } else if (percentage != null) {
                                 "${batteryInfo.status.label} ($percentage%)"
                             } else {

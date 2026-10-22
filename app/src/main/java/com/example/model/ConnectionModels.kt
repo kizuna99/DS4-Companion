@@ -25,9 +25,14 @@ enum class BatteryStatus(val label: String) {
 data class BatteryInfo(
     val percentage: Int? = null,
     val status: BatteryStatus = BatteryStatus.UNAVAILABLE,
-    val isCharging: Boolean = false,
+    val isCharging: Boolean? = null,
+    val lastUpdated: Long = System.currentTimeMillis(),
+    val isStale: Boolean = false,
     val sourceDescription: String = "No data received"
-)
+) {
+    val isChargingConfirmed: Boolean
+        get() = isCharging == true
+}
 
 enum class DS4Feature(val label: String) {
     BUTTON_INPUT("Button Input Events"),

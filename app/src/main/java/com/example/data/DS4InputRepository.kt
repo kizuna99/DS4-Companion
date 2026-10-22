@@ -2,25 +2,25 @@ package com.example.data
 
 import android.content.Context
 import android.os.SystemClock
-import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
-import com.example.model.AxisRangeInfo
 import com.example.model.BatteryInfo
 import com.example.model.BatteryStatus
 import com.example.model.CenteringStatus
 import com.example.model.ConnectionStatus
 import com.example.model.DS4Constants
 import com.example.model.DS4DeviceInfo
-import com.example.model.DS4Feature
 import com.example.model.DiagnosticsState
 import com.example.model.InputLogEvent
 import com.example.model.InputState
 import com.example.model.LightBarApplyResult
 import com.example.model.LightBarColor
+import com.example.model.TouchpadState
 import com.example.model.TransportType
 import com.example.protocol.DS4UsbTransmitter
+import com.example.protocol.LightBarController
+import com.example.sensor.MotionSensorManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -38,7 +38,8 @@ class DS4InputRepository(private val context: Context) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val controllerManager = ControllerManager(context)
-    val lightBarController = com.example.protocol.LightBarController(context)
+    val lightBarController = LightBarController(context)
+    val motionSensorManager = MotionSensorManager(context)
     private val usbTransmitter = DS4UsbTransmitter(context)
 
     // Connection states directly delegated to ControllerManager
@@ -46,6 +47,7 @@ class DS4InputRepository(private val context: Context) {
     val currentDevice: StateFlow<DS4DeviceInfo?> = controllerManager.activeController
     val discoveredDevices: StateFlow<List<DS4DeviceInfo>> = controllerManager.discoveredControllers
     val isSimulationMode: StateFlow<Boolean> = controllerManager.isSimulationMode
+    val batteryState: StateFlow<BatteryInfo> = controllerManager.batteryRepository.batteryState
 
     // Light bar state
     private val _lightBarColor = MutableStateFlow(LightBarColor.PLAYSTATION_BLUE)
@@ -70,7 +72,32 @@ class DS4InputRepository(private val context: Context) {
             controllerManager.activeController.collect { device ->
                 if (device != null) {
                     inspectDeviceDiagnostics(device)
+                    motionSensorManager.bindController(device.inputDeviceId)
+                } else {
+                    motionSensorManager.unbindController()
                 }
+            }
+        }
+
+        scope.launch {
+            controllerManager.isSimulationMode.collect { isSim ->
+                if (isSim) {
+                    motionSensorManager.startSimulation()
+                    // Set initial simulated touchpad point
+                    _inputState.update {
+                        it.copy(
+                            touchpad = TouchpadState(x = 0.5f, y = 0.5f, isTouching = false, isClicked = false)
+                        )
+                    }
+                } else {
+                    motionSensorManager.stopSimulation()
+                }
+            }
+        }
+
+        scope.launch {
+            motionSensorManager.motionSensors.collect { sensors ->
+                _inputState.update { it.copy(motionSensors = sensors) }
             }
         }
     }
@@ -88,61 +115,56 @@ class DS4InputRepository(private val context: Context) {
         controllerManager.disconnect()
     }
 
-    fun toggleSimulationMode(enable: Boolean) {
-        controllerManager.setSimulationMode(enable)
+    fun setSimulationMode(enabled: Boolean) {
+        controllerManager.setSimulationMode(enabled)
     }
 
     private fun inspectDeviceDiagnostics(device: DS4DeviceInfo) {
-        val ranges = mutableListOf<AxisRangeInfo>()
-        val devId = device.inputDeviceId
-        var sourcesDesc = "System HID Gamepad"
+        val inputDev = device.inputDeviceId?.let { InputDevice.getDevice(it) }
+        val ranges = mutableListOf<com.example.model.AxisRangeInfo>()
+        val notes = mutableListOf<String>()
 
-        if (devId != null) {
-            val inputDev = InputDevice.getDevice(devId)
-            if (inputDev != null) {
-                sourcesDesc = "Sources: ${Integer.toHexString(inputDev.sources)}"
-                val axes = listOf(
-                    "AXIS_X" to MotionEvent.AXIS_X,
-                    "AXIS_Y" to MotionEvent.AXIS_Y,
-                    "AXIS_Z" to MotionEvent.AXIS_Z,
-                    "AXIS_RZ" to MotionEvent.AXIS_RZ,
-                    "AXIS_LTRIGGER" to MotionEvent.AXIS_LTRIGGER,
-                    "AXIS_RTRIGGER" to MotionEvent.AXIS_RTRIGGER,
-                    "AXIS_HAT_X" to MotionEvent.AXIS_HAT_X,
-                    "AXIS_HAT_Y" to MotionEvent.AXIS_HAT_Y
-                )
-                for ((name, axisId) in axes) {
-                    val range = inputDev.getMotionRange(axisId)
-                    if (range != null) {
-                        ranges.add(
-                            AxisRangeInfo(
-                                axisName = name,
-                                axisId = axisId,
-                                min = range.min,
-                                max = range.max,
-                                flat = range.flat,
-                                fuzz = range.fuzz
-                            )
+        if (inputDev != null) {
+            val axesToCheck = listOf(
+                MotionEvent.AXIS_X to "Left Stick X",
+                MotionEvent.AXIS_Y to "Left Stick Y",
+                MotionEvent.AXIS_Z to "Right Stick X",
+                MotionEvent.AXIS_RZ to "Right Stick Y",
+                MotionEvent.AXIS_LTRIGGER to "L2 Analog Trigger",
+                MotionEvent.AXIS_RTRIGGER to "R2 Analog Trigger",
+                MotionEvent.AXIS_HAT_X to "D-Pad Hat X",
+                MotionEvent.AXIS_HAT_Y to "D-Pad Hat Y"
+            )
+
+            for ((axis, name) in axesToCheck) {
+                val range = inputDev.getMotionRange(axis)
+                if (range != null) {
+                    ranges.add(
+                        com.example.model.AxisRangeInfo(
+                            axisName = name,
+                            axisId = axis,
+                            min = range.min,
+                            max = range.max,
+                            flat = range.flat,
+                            fuzz = range.fuzz
                         )
-                    }
+                    )
                 }
             }
-        }
-
-        val notes = mutableListOf<String>()
-        if (device.transport == TransportType.USB_OTG) {
-            notes.add("USB OTG connection active: Direct hardware HID Output Reports (Report 0x05) supported for instantaneous light bar and rumble.")
-        } else if (device.transport == TransportType.BLUETOOTH) {
-            notes.add("Bluetooth connection active: Standard Android OS isolates HID output socket. For hardware light bar color programming, use a USB OTG adapter.")
+            notes.add("InputDevice detected via system subsystem: ${inputDev.name}")
+            if (device.isOfficialSony) {
+                notes.add("Official Sony Vendor ID verified (0x054C)")
+            }
         } else if (device.transport == TransportType.SIMULATION) {
-            notes.add("Safety Simulation Mode: Ideal for testing UI, button telemetry, and diagnostics without physical controller hardware.")
+            notes.add("Virtual DualShock 4 Simulation Active")
+            notes.add("All hardware axes and buttons ready for interactive test")
         }
 
-        _diagnosticsState.update {
-            it.copy(
-                vendorIdHex = device.vendorId?.let { v -> "0x${Integer.toHexString(v).uppercase()}" } ?: "-",
-                productIdHex = device.productId?.let { p -> "0x${Integer.toHexString(p).uppercase()}" } ?: "-",
-                inputSourcesDescription = sourcesDesc,
+        _diagnosticsState.update { current ->
+            current.copy(
+                vendorIdHex = "0x" + (device.vendorId?.toString(16)?.uppercase()?.padStart(4, '0') ?: "0000"),
+                productIdHex = "0x" + (device.productId?.toString(16)?.uppercase()?.padStart(4, '0') ?: "0000"),
+                inputSourcesDescription = inputDev?.sources?.let { "0x" + it.toString(16) } ?: "Virtual / OTG",
                 axisRanges = ranges,
                 hardwareNotes = notes
             )
@@ -167,15 +189,12 @@ class DS4InputRepository(private val context: Context) {
                 recentEvents = emptyList()
             )
         }
-        buttonPressStartTimes.clear()
-        _diagnosticsState.update {
-            it.copy(stuckButtons = emptySet(), detectedInputs = emptySet())
-        }
     }
 
     fun clearDiagnostics() {
-        _diagnosticsState.update {
-            it.copy(
+        buttonPressStartTimes.clear()
+        _diagnosticsState.update { current ->
+            current.copy(
                 detectedInputs = emptySet(),
                 stuckButtons = emptySet(),
                 totalEventsCount = 0L,
@@ -193,7 +212,8 @@ class DS4InputRepository(private val context: Context) {
     fun processKeyEvent(event: KeyEvent): Boolean {
         val isDown = event.action == KeyEvent.ACTION_DOWN
         val keyCode = event.keyCode
-        val buttonName = getButtonName(keyCode) ?: return false
+        val isTouchpad = DS4Constants.isTouchpadKey(keyCode)
+        val buttonName = if (isTouchpad) "Touchpad Click" else (getButtonName(keyCode) ?: return false)
 
         // Update stuck button tracking
         val now = SystemClock.uptimeMillis()
@@ -207,31 +227,34 @@ class DS4InputRepository(private val context: Context) {
         val stuck = buttonPressStartTimes.filter { now - it.value > 12000 }.keys.toSet()
 
         _inputState.update { current ->
-            val updated = when (keyCode) {
-                DS4Constants.KEY_CROSS -> current.copy(buttonCross = isDown)
-                DS4Constants.KEY_CIRCLE -> current.copy(buttonCircle = isDown)
-                DS4Constants.KEY_SQUARE -> current.copy(buttonSquare = isDown)
-                DS4Constants.KEY_TRIANGLE -> current.copy(buttonTriangle = isDown)
-                DS4Constants.KEY_L1 -> current.copy(buttonL1 = isDown)
-                DS4Constants.KEY_R1 -> current.copy(buttonR1 = isDown)
-                DS4Constants.KEY_L2 -> current.copy(
+            val updated = when {
+                isTouchpad -> current.copy(
+                    buttonTouchpad = isDown,
+                    touchpad = current.touchpad.copy(isClicked = isDown)
+                )
+                keyCode == DS4Constants.KEY_CROSS -> current.copy(buttonCross = isDown)
+                keyCode == DS4Constants.KEY_CIRCLE -> current.copy(buttonCircle = isDown)
+                keyCode == DS4Constants.KEY_SQUARE -> current.copy(buttonSquare = isDown)
+                keyCode == DS4Constants.KEY_TRIANGLE -> current.copy(buttonTriangle = isDown)
+                keyCode == DS4Constants.KEY_L1 -> current.copy(buttonL1 = isDown)
+                keyCode == DS4Constants.KEY_R1 -> current.copy(buttonR1 = isDown)
+                keyCode == DS4Constants.KEY_L2 -> current.copy(
                     buttonL2 = isDown,
                     l2Pressure = if (isDown && current.l2Pressure == 0f) 1f else current.l2Pressure
                 )
-                DS4Constants.KEY_R2 -> current.copy(
+                keyCode == DS4Constants.KEY_R2 -> current.copy(
                     buttonR2 = isDown,
                     r2Pressure = if (isDown && current.r2Pressure == 0f) 1f else current.r2Pressure
                 )
-                DS4Constants.KEY_L3 -> current.copy(buttonL3 = isDown)
-                DS4Constants.KEY_R3 -> current.copy(buttonR3 = isDown)
-                DS4Constants.KEY_SHARE -> current.copy(buttonShare = isDown)
-                DS4Constants.KEY_OPTIONS -> current.copy(buttonOptions = isDown)
-                DS4Constants.KEY_PS -> current.copy(buttonPs = isDown)
-                DS4Constants.KEY_TOUCHPAD -> current.copy(buttonTouchpad = isDown)
-                KeyEvent.KEYCODE_DPAD_UP -> current.copy(dpadUp = isDown)
-                KeyEvent.KEYCODE_DPAD_DOWN -> current.copy(dpadDown = isDown)
-                KeyEvent.KEYCODE_DPAD_LEFT -> current.copy(dpadLeft = isDown)
-                KeyEvent.KEYCODE_DPAD_RIGHT -> current.copy(dpadRight = isDown)
+                keyCode == DS4Constants.KEY_L3 -> current.copy(buttonL3 = isDown)
+                keyCode == DS4Constants.KEY_R3 -> current.copy(buttonR3 = isDown)
+                keyCode == DS4Constants.KEY_SHARE -> current.copy(buttonShare = isDown)
+                keyCode == DS4Constants.KEY_OPTIONS -> current.copy(buttonOptions = isDown)
+                keyCode == DS4Constants.KEY_PS -> current.copy(buttonPs = isDown)
+                keyCode == KeyEvent.KEYCODE_DPAD_UP -> current.copy(dpadUp = isDown)
+                keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> current.copy(dpadDown = isDown)
+                keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> current.copy(dpadLeft = isDown)
+                keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> current.copy(dpadRight = isDown)
                 else -> current
             }
 
@@ -264,13 +287,108 @@ class DS4InputRepository(private val context: Context) {
     }
 
     /**
-     * Dispatched from Activity's dispatchGenericMotionEvent
+     * Dispatched from Activity's dispatchTouchEvent for external touchpad/pointer events.
+     */
+    fun processTouchEvent(event: MotionEvent): Boolean {
+        return handlePointerOrTouchEvent(event)
+    }
+
+    /**
+     * Dispatched from Activity's dispatchGenericMotionEvent.
      */
     fun processMotionEvent(event: MotionEvent): Boolean {
-        if (!DS4Constants.isGamepadOrJoystick(event.source)) {
+        var handled = false
+        if (isTouchpadOrPointerEvent(event)) {
+            handled = handlePointerOrTouchEvent(event)
+        }
+
+        if (DS4Constants.isGamepadOrJoystick(event.source)) {
+            handled = handleGamepadMotionEvent(event) || handled
+        }
+        return handled
+    }
+
+    private fun isTouchpadOrPointerEvent(event: MotionEvent): Boolean {
+        val src = event.source
+        return (src and InputDevice.SOURCE_TOUCHPAD != 0) ||
+                (src and InputDevice.SOURCE_MOUSE != 0) ||
+                (src and InputDevice.SOURCE_TRACKBALL != 0) ||
+                (src and InputDevice.SOURCE_CLASS_POINTER != 0) ||
+                (event.device != null && DS4Constants.isDualShock4(event.device.vendorId, event.device.productId, event.device.name))
+    }
+
+    private fun handlePointerOrTouchEvent(event: MotionEvent): Boolean {
+        val dev = event.device
+        val isControllerOrigin = dev != null && (
+                DS4Constants.isDualShock4(dev.vendorId, dev.productId, dev.name) ||
+                DS4Constants.isGamepadOrJoystick(dev.sources) ||
+                (dev.sources and InputDevice.SOURCE_TOUCHPAD != 0)
+        )
+
+        // Only handle if coming from controller touchpad or pointer device
+        if (!isControllerOrigin && (event.source and InputDevice.SOURCE_TOUCHPAD == 0) && (event.source and InputDevice.SOURCE_MOUSE == 0)) {
             return false
         }
 
+        val action = event.actionMasked
+        val isTouching = action == MotionEvent.ACTION_DOWN ||
+                action == MotionEvent.ACTION_MOVE ||
+                action == MotionEvent.ACTION_HOVER_MOVE
+
+        val isPrimaryClick = (event.buttonState and MotionEvent.BUTTON_PRIMARY != 0) ||
+                (action == MotionEvent.ACTION_BUTTON_PRESS && event.actionButton == MotionEvent.BUTTON_PRIMARY)
+
+        // Read normalized coordinates (0.0 to 1.0)
+        val xRange = dev?.getMotionRange(MotionEvent.AXIS_X)?.range ?: 1920f
+        val yRange = dev?.getMotionRange(MotionEvent.AXIS_Y)?.range ?: 942f
+
+        val normX = if (xRange > 1f) (event.x / xRange).coerceIn(0f, 1f) else event.x.coerceIn(0f, 1f)
+        val normY = if (yRange > 1f) (event.y / yRange).coerceIn(0f, 1f) else event.y.coerceIn(0f, 1f)
+
+        _inputState.update { current ->
+            val detected = mutableSetOf<String>()
+            detected.add("Touchpad Surface")
+            if (isPrimaryClick) {
+                detected.add("Touchpad Click")
+            }
+
+            var newRecent = current.recentEvents
+            if (isPrimaryClick && !current.buttonTouchpad) {
+                val log = InputLogEvent(
+                    name = "Touchpad Click",
+                    action = "PRESSED",
+                    value = "1"
+                )
+                newRecent = (listOf(log) + current.recentEvents).take(20)
+            }
+
+            current.copy(
+                buttonTouchpad = current.buttonTouchpad || isPrimaryClick,
+                touchpad = TouchpadState(
+                    x = if (isTouching) normX else current.touchpad.x,
+                    y = if (isTouching) normY else current.touchpad.y,
+                    isTouching = isTouching,
+                    isClicked = isPrimaryClick || current.buttonTouchpad,
+                    touchCount = if (isTouching) event.pointerCount else 0
+                ),
+                touchedInputs = current.touchedInputs + detected,
+                recentEvents = newRecent,
+                lastUpdated = System.currentTimeMillis()
+            )
+        }
+
+        _diagnosticsState.update { diag ->
+            diag.copy(
+                detectedInputs = diag.detectedInputs + "Touchpad Surface" + (if (isPrimaryClick) setOf("Touchpad Click") else emptySet()),
+                totalEventsCount = diag.totalEventsCount + 1,
+                lastEventTime = System.currentTimeMillis()
+            )
+        }
+
+        return true
+    }
+
+    private fun handleGamepadMotionEvent(event: MotionEvent): Boolean {
         val lx = event.getAxisValue(MotionEvent.AXIS_X)
         val ly = event.getAxisValue(MotionEvent.AXIS_Y)
         val rx = event.getAxisValue(MotionEvent.AXIS_Z)
@@ -360,6 +478,9 @@ class DS4InputRepository(private val context: Context) {
     }
 
     private fun getButtonName(keyCode: Int): String? {
+        if (DS4Constants.isTouchpadKey(keyCode)) {
+            return "Touchpad Click"
+        }
         return when (keyCode) {
             DS4Constants.KEY_CROSS -> "Cross (X)"
             DS4Constants.KEY_CIRCLE -> "Circle (O)"
@@ -374,7 +495,6 @@ class DS4InputRepository(private val context: Context) {
             DS4Constants.KEY_SHARE -> "Share Button"
             DS4Constants.KEY_OPTIONS -> "Options Button"
             DS4Constants.KEY_PS -> "PS Button"
-            DS4Constants.KEY_TOUCHPAD -> "Touchpad Click"
             KeyEvent.KEYCODE_DPAD_UP -> "D-Pad Up"
             KeyEvent.KEYCODE_DPAD_DOWN -> "D-Pad Down"
             KeyEvent.KEYCODE_DPAD_LEFT -> "D-Pad Left"

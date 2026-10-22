@@ -140,10 +140,24 @@ class DS4DeviceScanner(private val context: Context) {
                 val batteryState = device.batteryState
                 val capacity = batteryState.capacity
                 val status = batteryState.status
-                val isCharging = status == 2 // BatteryState.STATUS_CHARGING
+                val isCharging: Boolean? = when (status) {
+                    2 -> true
+                    3, 4, 5 -> false
+                    1 -> null
+                    else -> null
+                }
 
                 if (!capacity.isNaN() && capacity >= 0f) {
                     return DS4Protocol.parseAndroidBatteryState(capacity, isCharging)
+                } else if (isCharging != null) {
+                    return BatteryInfo(
+                        percentage = null,
+                        status = if (isCharging) BatteryStatus.CHARGING else BatteryStatus.UNAVAILABLE,
+                        isCharging = isCharging,
+                        lastUpdated = System.currentTimeMillis(),
+                        isStale = false,
+                        sourceDescription = "Android InputDevice BatteryState (Status only)"
+                    )
                 }
             } catch (e: Throwable) {
                 Log.d(TAG, "BatteryState not supported on this device/kernel", e)
@@ -154,7 +168,9 @@ class DS4DeviceScanner(private val context: Context) {
         return BatteryInfo(
             percentage = null,
             status = BatteryStatus.UNAVAILABLE,
-            isCharging = false,
+            isCharging = null,
+            lastUpdated = System.currentTimeMillis(),
+            isStale = false,
             sourceDescription = "OS driver does not report battery over current transport"
         )
     }

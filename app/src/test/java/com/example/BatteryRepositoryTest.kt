@@ -1,9 +1,11 @@
 package com.example
 
 import com.example.data.BatteryRepository
+import com.example.model.BatteryInfo
 import com.example.model.BatteryStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -23,7 +25,8 @@ class BatteryRepositoryTest {
         val state = batteryRepository.batteryState.value
         assertEquals(BatteryStatus.UNAVAILABLE, state.status)
         assertNull(state.percentage)
-        assertFalse(state.isCharging)
+        assertNull(state.isCharging)
+        assertFalse(state.isStale)
     }
 
     @Test
@@ -32,7 +35,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.parseDs4BatteryByte(0x0A.toByte())
         assertEquals(100, info.percentage)
         assertEquals(BatteryStatus.HIGH, info.status)
-        assertFalse(info.isCharging)
+        assertEquals(false, info.isCharging)
     }
 
     @Test
@@ -41,7 +44,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.parseDs4BatteryByte(0x17.toByte())
         assertEquals(70, info.percentage)
         assertEquals(BatteryStatus.CHARGING, info.status)
-        assertTrue(info.isCharging)
+        assertEquals(true, info.isCharging)
     }
 
     @Test
@@ -50,7 +53,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.parseDs4BatteryByte(0x04.toByte())
         assertEquals(40, info.percentage)
         assertEquals(BatteryStatus.MEDIUM, info.status)
-        assertFalse(info.isCharging)
+        assertEquals(false, info.isCharging)
     }
 
     @Test
@@ -59,7 +62,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.parseDs4BatteryByte(0x02.toByte())
         assertEquals(20, info.percentage)
         assertEquals(BatteryStatus.LOW, info.status)
-        assertFalse(info.isCharging)
+        assertEquals(false, info.isCharging)
     }
 
     @Test
@@ -68,7 +71,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.parseDs4BatteryByte(0x00.toByte())
         assertEquals(0, info.percentage)
         assertEquals(BatteryStatus.EMPTY, info.status)
-        assertFalse(info.isCharging)
+        assertEquals(false, info.isCharging)
     }
 
     @Test
@@ -77,6 +80,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.parseDs4BatteryByte(0x0F.toByte())
         assertNull(info.percentage)
         assertEquals(BatteryStatus.UNAVAILABLE, info.status)
+        assertNull(info.isCharging)
     }
 
     @Test
@@ -88,7 +92,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.parseDs4HidReport(usbReport)
         assertEquals(80, info.percentage)
         assertEquals(BatteryStatus.HIGH, info.status)
-        assertFalse(info.isCharging)
+        assertEquals(false, info.isCharging)
     }
 
     @Test
@@ -100,7 +104,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.parseDs4HidReport(btReport)
         assertEquals(60, info.percentage)
         assertEquals(BatteryStatus.CHARGING, info.status)
-        assertTrue(info.isCharging)
+        assertEquals(true, info.isCharging)
     }
 
     @Test
@@ -109,6 +113,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.parseDs4HidReport(shortReport)
         assertNull(info.percentage)
         assertEquals(BatteryStatus.UNAVAILABLE, info.status)
+        assertNull(info.isCharging)
     }
 
     @Test
@@ -116,6 +121,7 @@ class BatteryRepositoryTest {
         val info = batteryRepository.setUnavailable("Custom disconnect reason")
         assertNull(info.percentage)
         assertEquals(BatteryStatus.UNAVAILABLE, info.status)
+        assertNull(info.isCharging)
         assertEquals("Custom disconnect reason", info.sourceDescription)
     }
 
@@ -124,7 +130,49 @@ class BatteryRepositoryTest {
         val info = batteryRepository.setSimulatedBattery(85, false)
         assertEquals(85, info.percentage)
         assertEquals(BatteryStatus.HIGH, info.status)
-        assertFalse(info.isCharging)
+        assertEquals(false, info.isCharging)
         assertEquals(info, batteryRepository.batteryState.value)
+    }
+
+    @Test
+    fun testChargingToDischargingTransition() {
+        // Step 1: Controller is plugged in and charging (0x18 = 80% charging)
+        val chargingReport = batteryRepository.parseDs4BatteryByte(0x18.toByte())
+        assertEquals(80, chargingReport.percentage)
+        assertEquals(true, chargingReport.isCharging)
+        assertEquals(BatteryStatus.CHARGING, chargingReport.status)
+
+        // Step 2: Cable is removed. Controller reports discharging (0x08 = 80% discharging)
+        val dischargingReport = batteryRepository.parseDs4BatteryByte(0x08.toByte())
+        assertEquals(80, dischargingReport.percentage)
+        assertEquals(false, dischargingReport.isCharging)
+        assertEquals(BatteryStatus.HIGH, dischargingReport.status)
+
+        // StateFlow reflects the latest updated state without manual scanning
+        val current = batteryRepository.batteryState.value
+        assertEquals(false, current.isCharging)
+        assertEquals(80, current.percentage)
+    }
+
+    @Test
+    fun testStaleTelemetryHandling() {
+        // Set initial report from 20 seconds ago
+        val pastTimestamp = System.currentTimeMillis() - 20_000L
+        val oldChargingInfo = BatteryInfo(
+            percentage = 90,
+            status = BatteryStatus.CHARGING,
+            isCharging = true,
+            lastUpdated = pastTimestamp,
+            isStale = false,
+            sourceDescription = "Past reading"
+        )
+        batteryRepository.updateBattery(oldChargingInfo)
+
+        // Telemetry is older than 15s -> markStaleIfOutdated must transition isCharging to null
+        val stale = batteryRepository.markStaleIfOutdated(15_000L)
+        assertTrue(stale.isStale)
+        assertNull(stale.isCharging)
+        // Percentage remains preserved as last known reading
+        assertEquals(90, stale.percentage)
     }
 }

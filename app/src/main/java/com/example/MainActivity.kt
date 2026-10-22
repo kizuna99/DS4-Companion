@@ -111,6 +111,12 @@ class MainActivity : ComponentActivity() {
         }
         return super.dispatchGenericMotionEvent(event)
     }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        // Dispatches controller touchpad touches and physical clicks
+        viewModel.handleTouchEvent(event)
+        return super.dispatchTouchEvent(event)
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)

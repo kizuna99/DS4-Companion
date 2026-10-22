@@ -32,10 +32,13 @@ import com.example.protocol.DS4Protocol
 import com.example.protocol.DS4UsbTransmitter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
@@ -77,6 +80,7 @@ class ControllerManager(
 
     private var isRegistered = false
     private var boundLifecycle: Lifecycle? = null
+    private var batteryPollingJob: Job? = null
 
     // BroadcastReceiver for USB OTG and Bluetooth ACL connection events
     private val hardwareBroadcastReceiver = object : BroadcastReceiver() {
@@ -84,9 +88,11 @@ class ControllerManager(
             val action = intent?.action ?: return
             Log.d(TAG, "Hardware event received: $action")
             when (action) {
-                UsbManager.ACTION_USB_DEVICE_ATTACHED,
-                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
                     scanNow()
+                }
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                    handleUsbDetached()
                 }
                 BluetoothDevice.ACTION_ACL_CONNECTED,
                 BluetoothDevice.ACTION_ACL_DISCONNECTED,
@@ -99,7 +105,17 @@ class ControllerManager(
 
     init {
         startMonitoring()
-        scanNow()
+        val initialDevices = scanInputDeviceIds()
+        if (initialDevices.isNotEmpty()) {
+            val initial = initialDevices.first()
+            _activeController.value = initial
+            _connectionState.value = ConnectionStatus.CONNECTED
+            batteryRepository.updateBattery(initial.batteryInfo)
+            startBatteryPolling()
+        } else {
+            _activeController.value = null
+            _connectionState.value = ConnectionStatus.DISCONNECTED
+        }
     }
 
     /**
@@ -118,15 +134,20 @@ class ControllerManager(
         Log.d(TAG, "Lifecycle onStart: starting monitoring and refreshing controllers")
         startMonitoring()
         scanNow()
+        if (_activeController.value != null && !_isSimulationMode.value) {
+            startBatteryPolling()
+        }
     }
 
     override fun onStop(owner: LifecycleOwner) {
-        Log.d(TAG, "Lifecycle onStop")
+        Log.d(TAG, "Lifecycle onStop: pausing battery polling")
+        stopBatteryPolling()
     }
 
     override fun onDestroy(owner: LifecycleOwner) {
         Log.d(TAG, "Lifecycle onDestroy: releasing listeners")
         stopMonitoring()
+        stopBatteryPolling()
         boundLifecycle?.removeObserver(this)
         boundLifecycle = null
     }
@@ -185,6 +206,7 @@ class ControllerManager(
      * Unregisters all hardware listeners to prevent leaks.
      */
     fun stopMonitoring() {
+        stopBatteryPolling()
         if (!isRegistered) return
         try {
             inputManager?.unregisterInputDeviceListener(this)
@@ -271,35 +293,76 @@ class ControllerManager(
     /**
      * Executes immediate scanning across Android InputDevice subsystem, USB OTG, and Bluetooth HID,
      * updating [connectionState], [activeController], and [discoveredControllers].
+     *
+     * Only actively connected controllers (present in InputDevice or UsbManager) trigger
+     * [ConnectionStatus.CONNECTED]. Paired/bonded Bluetooth devices that are offline do not.
      */
     fun scanNow() {
         scope.launch {
             if (_isSimulationMode.value) return@launch
 
             _connectionState.value = ConnectionStatus.CONNECTING
-            val detected = mutableListOf<DS4DeviceInfo>()
+            val activeDevices = mutableListOf<DS4DeviceInfo>()
+            val pairedOfflineDevices = mutableListOf<DS4DeviceInfo>()
 
-            // 1. Scan via InputDevice.getDeviceIds()
-            detected.addAll(scanInputDeviceIds())
+            // 1. Scan active hardware InputDevices (gamepads actively connected via BT or USB)
+            activeDevices.addAll(scanInputDeviceIds())
 
-            // 2. Scan USB OTG devices
-            scanUsbOtgDevices(detected)
+            // 2. Scan physically attached USB OTG devices
+            scanUsbOtgDevices(activeDevices)
 
-            // 3. Scan paired Bluetooth HID devices
-            scanBluetoothHidDevices(detected)
+            // 3. Scan paired Bluetooth devices (kept as paired list, not marked as actively connected)
+            scanBluetoothPairedDevices(pairedOfflineDevices, activeDevices)
 
-            _discoveredControllers.value = detected
+            _discoveredControllers.value = activeDevices + pairedOfflineDevices
 
-            if (detected.isNotEmpty()) {
+            if (activeDevices.isNotEmpty()) {
                 val current = _activeController.value
                 val stillConnected = current?.let { active ->
-                    detected.find { it.id == active.id || (it.vendorId == active.vendorId && it.productId == active.productId) }
+                    activeDevices.find { it.id == active.id || (it.vendorId == active.vendorId && it.productId == active.productId) }
                 }
-                _activeController.value = stillConnected ?: detected.first()
+                val selected = stillConnected ?: activeDevices.first()
+                _activeController.value = selected
                 _connectionState.value = ConnectionStatus.CONNECTED
+                batteryRepository.updateBattery(selected.batteryInfo)
+                startBatteryPolling()
             } else {
                 _activeController.value = null
                 _connectionState.value = ConnectionStatus.DISCONNECTED
+                batteryRepository.setUnavailable("No controller connected")
+                stopBatteryPolling()
+            }
+        }
+    }
+
+    /**
+     * Handles USB detached broadcast specifically to distinguish charger disconnection
+     * from controller disconnection.
+     */
+    private fun handleUsbDetached() {
+        scope.launch {
+            Log.d(TAG, "Handling USB detached event. Checking remaining active connections...")
+            val current = _activeController.value
+            val activeDevices = scanInputDeviceIds()
+
+            if (activeDevices.isNotEmpty()) {
+                // Controller remains active (e.g., via Bluetooth while USB charging stopped)
+                val matching = current?.let { active ->
+                    activeDevices.find { it.id == active.id || (it.vendorId == active.vendorId && it.productId == active.productId) }
+                } ?: activeDevices.first()
+                _activeController.value = matching
+                _connectionState.value = ConnectionStatus.CONNECTED
+                // Refresh battery immediately to clear charging flag without requiring manual scan
+                refreshBatteryTelemetry(matching)
+            } else if (current?.transport == TransportType.USB_OTG) {
+                // Controller was connected solely via USB OTG cable and is now disconnected
+                _activeController.value = null
+                _connectionState.value = ConnectionStatus.DISCONNECTED
+                batteryRepository.setUnavailable("Controller disconnected (USB OTG detached)")
+                stopBatteryPolling()
+            } else if (current != null) {
+                // USB charger disconnected, controller was on Bluetooth
+                refreshBatteryTelemetry(current)
             }
         }
     }
@@ -310,15 +373,19 @@ class ControllerManager(
     fun connect(device: DS4DeviceInfo) {
         _activeController.value = device
         _connectionState.value = ConnectionStatus.CONNECTED
+        batteryRepository.updateBattery(device.batteryInfo)
+        startBatteryPolling()
     }
 
     /**
      * Disconnects current controller.
      */
     fun disconnect() {
+        stopBatteryPolling()
         _activeController.value = null
         _connectionState.value = ConnectionStatus.DISCONNECTED
         _isSimulationMode.value = false
+        batteryRepository.setUnavailable("Controller disconnected")
     }
 
     /**
@@ -327,6 +394,8 @@ class ControllerManager(
     fun setSimulationMode(enabled: Boolean) {
         _isSimulationMode.value = enabled
         if (enabled) {
+            stopBatteryPolling()
+            val simBattery = batteryRepository.setSimulatedBattery(85, false)
             val simDevice = DS4DeviceInfo(
                 id = "sim_ds4_01",
                 name = "DualShock 4 [Safety Simulation]",
@@ -335,12 +404,7 @@ class ControllerManager(
                 productId = DS4Constants.SONY_DS4_V2_PID,
                 modelName = "Sony DualShock 4 V2 (Simulated)",
                 isOfficialSony = true,
-                batteryInfo = BatteryInfo(
-                    percentage = 85,
-                    status = BatteryStatus.HIGH,
-                    isCharging = false,
-                    sourceDescription = "Simulation Telemetry"
-                ),
+                batteryInfo = simBattery,
                 supportedFeatures = listOf(
                     DS4Feature.BUTTON_INPUT,
                     DS4Feature.ANALOG_STICKS,
@@ -356,6 +420,76 @@ class ControllerManager(
             _connectionState.value = ConnectionStatus.CONNECTED
         } else {
             scanNow()
+        }
+    }
+
+    /**
+     * Starts background polling for battery telemetry (2-second interval)
+     * while a physical controller is connected.
+     */
+    fun startBatteryPolling() {
+        if (batteryPollingJob?.isActive == true) return
+        batteryPollingJob = scope.launch {
+            while (isActive) {
+                delay(2000L)
+                val controller = _activeController.value
+                if (controller == null || _connectionState.value != ConnectionStatus.CONNECTED) {
+                    break
+                }
+                if (_isSimulationMode.value) {
+                    continue
+                }
+                refreshBatteryTelemetry(controller)
+            }
+        }
+    }
+
+    /**
+     * Cancels active battery polling job to conserve resources.
+     */
+    fun stopBatteryPolling() {
+        batteryPollingJob?.cancel()
+        batteryPollingJob = null
+    }
+
+    /**
+     * Reads fresh battery telemetry from hardware over USB or Android InputDevice API,
+     * updates the authoritative [BatteryRepository] and synchronizes [_activeController].
+     */
+    fun refreshBatteryTelemetry(controller: DS4DeviceInfo? = _activeController.value) {
+        if (controller == null || _isSimulationMode.value) return
+
+        val isUsbAttached = usbTransmitter.findAttachedDs4UsbDevice() != null
+        var freshInfo: BatteryInfo? = null
+
+        // 1. Check direct USB telemetry if attached
+        if (isUsbAttached || controller.transport == TransportType.USB_OTG) {
+            val usbBattery = usbTransmitter.readBatteryOverUsb()
+            if (usbBattery != null && usbBattery.status != BatteryStatus.UNAVAILABLE) {
+                freshInfo = usbBattery
+            }
+        }
+
+        // 2. Query Android InputDevice framework
+        if (freshInfo == null && controller.inputDeviceId != null) {
+            val device = InputDevice.getDevice(controller.inputDeviceId)
+            if (device != null) {
+                val inputBattery = batteryRepository.extractFromInputDevice(device)
+                if (inputBattery.status != BatteryStatus.UNAVAILABLE || inputBattery.isCharging != null || inputBattery.percentage != null) {
+                    freshInfo = inputBattery
+                }
+            }
+        }
+
+        if (freshInfo != null) {
+            batteryRepository.updateBattery(freshInfo)
+            _activeController.value = _activeController.value?.copy(batteryInfo = freshInfo)
+        } else {
+            // Check if telemetry is older than 15s and mark stale if necessary
+            val staleInfo = batteryRepository.markStaleIfOutdated(15_000L)
+            if (staleInfo.isStale && _activeController.value?.batteryInfo != staleInfo) {
+                _activeController.value = _activeController.value?.copy(batteryInfo = staleInfo)
+            }
         }
     }
 
@@ -407,7 +541,10 @@ class ControllerManager(
         }
     }
 
-    private fun scanBluetoothHidDevices(outList: MutableList<DS4DeviceInfo>) {
+    private fun scanBluetoothPairedDevices(
+        outList: MutableList<DS4DeviceInfo>,
+        activeList: List<DS4DeviceInfo>
+    ) {
         if (!hasBluetoothPermission()) return
 
         try {
@@ -418,8 +555,9 @@ class ControllerManager(
                 val deviceName = device.name ?: ""
                 val lower = deviceName.lowercase()
                 if (lower.contains("wireless controller") || lower.contains("dualshock")) {
+                    val alreadyActive = activeList.any { it.name.equals(deviceName, ignoreCase = true) }
                     val alreadyInList = outList.any { it.name.equals(deviceName, ignoreCase = true) }
-                    if (!alreadyInList) {
+                    if (!alreadyActive && !alreadyInList) {
                         outList.add(
                             DS4DeviceInfo(
                                 id = "bt_${device.address}",
@@ -428,13 +566,13 @@ class ControllerManager(
                                 vendorId = DS4Constants.SONY_VENDOR_ID,
                                 productId = DS4Constants.SONY_DS4_V2_PID,
                                 bluetoothAddress = device.address,
-                                modelName = "DualShock 4 (Paired Bluetooth)",
+                                modelName = "DualShock 4 (Paired/Offline)",
                                 isOfficialSony = true,
                                 batteryInfo = BatteryInfo(
                                     percentage = null,
                                     status = BatteryStatus.UNAVAILABLE,
                                     isCharging = false,
-                                    sourceDescription = "Connect controller to query live battery"
+                                    sourceDescription = "Controller is not connected"
                                 ),
                                 supportedFeatures = listOf(
                                     DS4Feature.BUTTON_INPUT,

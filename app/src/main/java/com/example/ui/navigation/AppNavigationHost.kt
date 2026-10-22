@@ -69,14 +69,24 @@ fun AppNavigationHost(
             BackHandler {
                 navController.popBackStack(NavRoute.Home.route, inclusive = false)
             }
-            InputTesterScreen(viewModel = viewModel)
+            InputTesterScreen(
+                viewModel = viewModel,
+                onNavigateBack = {
+                    navController.popBackStack(NavRoute.Home.route, inclusive = false)
+                }
+            )
         }
 
         composable(NavRoute.Diagnostics.route) {
             BackHandler {
                 navController.popBackStack(NavRoute.Home.route, inclusive = false)
             }
-            DiagnosticsScreen(viewModel = viewModel)
+            DiagnosticsScreen(
+                viewModel = viewModel,
+                onNavigateBack = {
+                    navController.popBackStack(NavRoute.Home.route, inclusive = false)
+                }
+            )
         }
     }
 }
