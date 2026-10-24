@@ -65,7 +65,7 @@ class DS4LogicUnitTest {
         val battHigh = DS4Protocol.parseBatteryByte(0x09.toByte())
         assertEquals(90, battHigh.percentage)
         assertEquals(BatteryStatus.HIGH, battHigh.status)
-        assertFalse(battHigh.isCharging)
+        assertEquals(false, battHigh.isCharging)
 
         // Medium capacity: 4 (40%), discharging (0x04)
         val battMed = DS4Protocol.parseBatteryByte(0x04.toByte())

@@ -840,17 +840,18 @@ private fun MotionSensorsTelemetryCard(
                     )
                 }
 
+                val statusColor = if (sensors.isMoving) StatusWarning else StatusSuccess
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .background(StatusSuccess.copy(alpha = 0.15f))
+                        .background(statusColor.copy(alpha = 0.15f))
                         .padding(horizontal = 8.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = sensors.sensorStatus,
+                        text = if (sensors.isMoving) "Active Motion" else "Stationary",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
-                        color = StatusSuccess
+                        color = statusColor
                     )
                 }
             }

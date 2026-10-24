@@ -13,7 +13,8 @@ data class TouchpadState(
     val y: Float = 0.5f,
     val isTouching: Boolean = false,
     val isClicked: Boolean = false,
-    val touchCount: Int = 0
+    val touchCount: Int = 0,
+    val isHardwareSupported: Boolean = true
 )
 
 data class MotionSensorsState(
@@ -23,6 +24,11 @@ data class MotionSensorsState(
     val gyroX: Float = 0f,
     val gyroY: Float = 0f,
     val gyroZ: Float = 0f,
+    val isMoving: Boolean = false,
+    val isStationary: Boolean = true,
+    val dynamicAcceleration: Float = 0f,
+    val angularSpeed: Float = 0f,
+    val isCalibrated: Boolean = false,
     val isAvailable: Boolean = false,
     val sensorStatus: String = "Ready"
 )

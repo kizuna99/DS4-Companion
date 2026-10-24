@@ -20,22 +20,72 @@ import com.example.model.TransportType
  *
  * Strategies:
  * 1. Android 12+ (API 31+) LightsManager: Controls the RGB light bar natively on Bluetooth or USB.
- * 2. USB OTG Direct Hardware Protocol: Sends 32-byte Output Report 0x05 via controlTransfer & interrupt OUT endpoint.
+ *    - Uses a process-wide persistent LightsSession that stays alive in memory across Activity
+ *      destruction, configuration changes, and app backgrounding.
+ *    - Updates colors via session.requestLights() on the existing session without closing/reopening,
+ *      preventing session churn, LED flicker, or kernel reset to default color.
+ *    - Operates WITHOUT requiring an active foreground service: Android system_server's LightsService
+ *      maintains active device light states as long as the binder token is not explicitly closed and the
+ *      process remains in memory (even in cached/background state).
+ * 2. USB OTG Direct Hardware Protocol: Sends 32-byte Output Report 0x05 via controlTransfer & interrupt OUT.
+ *    - Controller hardware microcode stores the RGB PWM duty cycle in hardware registers.
+ *    - Hardware maintains the color indefinitely on USB power without background software polling.
  * 3. Simulation Mode: Updates reactive UI preview and logs telemetry immediately.
  * 4. Transparent error & compatibility messaging when hardware or OS constraints apply.
  */
 class LightBarController(private val context: Context) {
 
-    private val TAG = "LightBarController"
     private val usbTransmitter = DS4UsbTransmitter(context)
 
-    // Keep active session alive so the color remains illuminated
-    private var activeLightsSession: AutoCloseable? = null
+    companion object {
+        private const val TAG = "LightBarController"
+
+        // Retain process-wide active lights session across screen navigation and app backgrounding.
+        // Android's LightsService maintains the requested light state on the hardware as long as
+        // the session's IBinder token remains alive in the process and is not explicitly closed.
+        // This keeps the controller's light bar illuminated in the background without needing a foreground service.
+        @Volatile
+        private var activeLightsSession: AutoCloseable? = null
+
+        @Volatile
+        private var activeDeviceId: Int? = null
+
+        @Volatile
+        private var activeColor: LightBarColor = LightBarColor.PLAYSTATION_BLUE
+
+        /**
+         * Returns the currently applied LightBarColor across the process.
+         */
+        fun getActiveColor(): LightBarColor = activeColor
+
+        /**
+         * Checks whether an active LightsSession is held at the process level.
+         */
+        fun hasActiveSession(): Boolean = activeLightsSession != null
+
+        /**
+         * Explicitly closes the process-wide LightsSession.
+         * Note: This must ONLY be invoked if the user explicitly turns off the light bar or
+         * requests a complete hardware reset, NEVER during ordinary app backgrounding.
+         */
+        fun releaseSession() {
+            try {
+                activeLightsSession?.close()
+                activeLightsSession = null
+                activeDeviceId = null
+                Log.d(TAG, "Process-wide LightsSession explicitly released.")
+            } catch (e: Exception) {
+                Log.w(TAG, "Error releasing LightsSession: ${e.message}")
+            }
+        }
+    }
 
     fun applyColor(
         color: LightBarColor,
         activeDevice: DS4DeviceInfo?
     ): LightBarApplyResult {
+        activeColor = color
+
         val argb = AndroidColor.argb(
             255,
             color.effectiveRed,
@@ -139,13 +189,34 @@ class LightBarController(private val context: Context) {
             }
 
             if (addedLightsCount > 0) {
-                try {
-                    activeLightsSession?.close()
-                } catch (_: Exception) {}
+                val lightsRequest = requestBuilder.build()
+                val currentSession = activeLightsSession
 
-                val session = lightsManager.openSession()
-                session.requestLights(requestBuilder.build())
-                activeLightsSession = session
+                if (currentSession is LightsManager.LightsSession && activeDeviceId == device.id) {
+                    // Fast-path: dynamically update existing open session without closing it.
+                    // This avoids session teardown in Android's LightsService, eliminates flicker,
+                    // and ensures the session stays active when the app is backgrounded.
+                    try {
+                        currentSession.requestLights(lightsRequest)
+                    } catch (e: Exception) {
+                        Log.d(TAG, "Existing LightsSession update failed (${e.message}), recreating session.")
+                        try { currentSession.close() } catch (_: Exception) {}
+                        val newSession = lightsManager.openSession()
+                        newSession.requestLights(lightsRequest)
+                        activeLightsSession = newSession
+                        activeDeviceId = device.id
+                    }
+                } else {
+                    // Open a new session and retain it at process scope
+                    try {
+                        currentSession?.close()
+                    } catch (_: Exception) {}
+
+                    val newSession = lightsManager.openSession()
+                    newSession.requestLights(lightsRequest)
+                    activeLightsSession = newSession
+                    activeDeviceId = device.id
+                }
 
                 LightBarApplyResult(
                     true,
@@ -160,10 +231,11 @@ class LightBarController(private val context: Context) {
         }
     }
 
+    /**
+     * Closes the active session if explicit cleanup is requested.
+     * Note: NEVER call this during onPause or onStop.
+     */
     fun close() {
-        try {
-            activeLightsSession?.close()
-            activeLightsSession = null
-        } catch (_: Exception) {}
+        releaseSession()
     }
 }

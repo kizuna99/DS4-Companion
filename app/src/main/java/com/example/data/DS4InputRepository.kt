@@ -49,8 +49,31 @@ class DS4InputRepository(private val context: Context) {
     val isSimulationMode: StateFlow<Boolean> = controllerManager.isSimulationMode
     val batteryState: StateFlow<BatteryInfo> = controllerManager.batteryRepository.batteryState
 
-    // Light bar state
-    private val _lightBarColor = MutableStateFlow(LightBarColor.PLAYSTATION_BLUE)
+    private val prefs = context.getSharedPreferences("ds4_companion_prefs", Context.MODE_PRIVATE)
+
+    private fun loadLastLightBarColor(): LightBarColor {
+        val red = prefs.getInt("lightbar_red", LightBarColor.PLAYSTATION_BLUE.red)
+        val green = prefs.getInt("lightbar_green", LightBarColor.PLAYSTATION_BLUE.green)
+        val blue = prefs.getInt("lightbar_blue", LightBarColor.PLAYSTATION_BLUE.blue)
+        val brightness = prefs.getFloat("lightbar_brightness", LightBarColor.PLAYSTATION_BLUE.brightness)
+        val flashOn = prefs.getInt("lightbar_flash_on", 0)
+        val flashOff = prefs.getInt("lightbar_flash_off", 0)
+        return LightBarColor(red, green, blue, brightness, flashOn, flashOff)
+    }
+
+    private fun saveLastLightBarColor(color: LightBarColor) {
+        prefs.edit()
+            .putInt("lightbar_red", color.red)
+            .putInt("lightbar_green", color.green)
+            .putInt("lightbar_blue", color.blue)
+            .putFloat("lightbar_brightness", color.brightness)
+            .putInt("lightbar_flash_on", color.flashOn)
+            .putInt("lightbar_flash_off", color.flashOff)
+            .apply()
+    }
+
+    // Light bar state (restored from persistent storage)
+    private val _lightBarColor = MutableStateFlow(loadLastLightBarColor())
     val lightBarColor: StateFlow<LightBarColor> = _lightBarColor.asStateFlow()
 
     private val _lightBarResult = MutableStateFlow<LightBarApplyResult?>(null)
@@ -73,8 +96,12 @@ class DS4InputRepository(private val context: Context) {
                 if (device != null) {
                     inspectDeviceDiagnostics(device)
                     motionSensorManager.bindController(device.inputDeviceId)
+                    // Automatically re-apply persisted light bar color upon connection/reconnection
+                    val savedColor = _lightBarColor.value
+                    lightBarController.applyColor(savedColor, device)
                 } else {
                     motionSensorManager.unbindController()
+                    resetInputTester()
                 }
             }
         }
@@ -113,6 +140,7 @@ class DS4InputRepository(private val context: Context) {
 
     fun disconnectDevice() {
         controllerManager.disconnect()
+        resetInputTester()
     }
 
     fun setSimulationMode(enabled: Boolean) {
@@ -173,6 +201,7 @@ class DS4InputRepository(private val context: Context) {
 
     fun applyLightBarColor(color: LightBarColor) {
         _lightBarColor.value = color
+        saveLastLightBarColor(color)
         val device = currentDevice.value
         val result = lightBarController.applyColor(color, device)
         _lightBarResult.value = result
@@ -309,24 +338,42 @@ class DS4InputRepository(private val context: Context) {
     }
 
     private fun isTouchpadOrPointerEvent(event: MotionEvent): Boolean {
+        // Immediately reject any phone touchscreen interactions
+        if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
+            return false
+        }
         val src = event.source
         return (src and InputDevice.SOURCE_TOUCHPAD != 0) ||
                 (src and InputDevice.SOURCE_MOUSE != 0) ||
-                (src and InputDevice.SOURCE_TRACKBALL != 0) ||
-                (src and InputDevice.SOURCE_CLASS_POINTER != 0) ||
-                (event.device != null && DS4Constants.isDualShock4(event.device.vendorId, event.device.productId, event.device.name))
+                (src and InputDevice.SOURCE_TRACKBALL != 0)
     }
 
     private fun handlePointerOrTouchEvent(event: MotionEvent): Boolean {
-        val dev = event.device
-        val isControllerOrigin = dev != null && (
-                DS4Constants.isDualShock4(dev.vendorId, dev.productId, dev.name) ||
-                DS4Constants.isGamepadOrJoystick(dev.sources) ||
-                (dev.sources and InputDevice.SOURCE_TOUCHPAD != 0)
-        )
+        // 1. Phone touchscreen touches must NEVER trigger controller touchpad input
+        if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
+            return false
+        }
 
-        // Only handle if coming from controller touchpad or pointer device
-        if (!isControllerOrigin && (event.source and InputDevice.SOURCE_TOUCHPAD == 0) && (event.source and InputDevice.SOURCE_MOUSE == 0)) {
+        val dev = event.device ?: return false
+        val activeDev = currentDevice.value
+
+        // 2. Validate device ID or DualShock 4 hardware signature
+        val isMatchingActiveDevice = activeDev?.inputDeviceId != null && dev.id == activeDev.inputDeviceId
+        val isDs4Hardware = DS4Constants.isDualShock4(dev.vendorId, dev.productId, dev.name) ||
+                dev.name.lowercase().contains("wireless controller") ||
+                dev.name.lowercase().contains("dualshock")
+
+        if (!isMatchingActiveDevice && !isDs4Hardware) {
+            return false
+        }
+
+        // 3. Ensure input source is touchpad, mouse, or pointer on the controller
+        val isTouchpadSource = (event.source and InputDevice.SOURCE_TOUCHPAD != 0) ||
+                (event.source and InputDevice.SOURCE_MOUSE != 0) ||
+                (event.source and InputDevice.SOURCE_TRACKBALL != 0) ||
+                (event.source and InputDevice.SOURCE_JOYSTICK != 0)
+
+        if (!isTouchpadSource) {
             return false
         }
 
@@ -339,15 +386,17 @@ class DS4InputRepository(private val context: Context) {
                 (action == MotionEvent.ACTION_BUTTON_PRESS && event.actionButton == MotionEvent.BUTTON_PRIMARY)
 
         // Read normalized coordinates (0.0 to 1.0)
-        val xRange = dev?.getMotionRange(MotionEvent.AXIS_X)?.range ?: 1920f
-        val yRange = dev?.getMotionRange(MotionEvent.AXIS_Y)?.range ?: 942f
+        val xRange = dev.getMotionRange(MotionEvent.AXIS_X)?.range ?: 1920f
+        val yRange = dev.getMotionRange(MotionEvent.AXIS_Y)?.range ?: 942f
 
         val normX = if (xRange > 1f) (event.x / xRange).coerceIn(0f, 1f) else event.x.coerceIn(0f, 1f)
         val normY = if (yRange > 1f) (event.y / yRange).coerceIn(0f, 1f) else event.y.coerceIn(0f, 1f)
 
         _inputState.update { current ->
             val detected = mutableSetOf<String>()
-            detected.add("Touchpad Surface")
+            if (isTouching) {
+                detected.add("Touchpad Surface")
+            }
             if (isPrimaryClick) {
                 detected.add("Touchpad Click")
             }
@@ -360,16 +409,24 @@ class DS4InputRepository(private val context: Context) {
                     value = "1"
                 )
                 newRecent = (listOf(log) + current.recentEvents).take(20)
+            } else if (!isPrimaryClick && current.buttonTouchpad && action == MotionEvent.ACTION_BUTTON_RELEASE) {
+                val log = InputLogEvent(
+                    name = "Touchpad Click",
+                    action = "RELEASED",
+                    value = "0"
+                )
+                newRecent = (listOf(log) + current.recentEvents).take(20)
             }
 
             current.copy(
-                buttonTouchpad = current.buttonTouchpad || isPrimaryClick,
+                buttonTouchpad = isPrimaryClick,
                 touchpad = TouchpadState(
                     x = if (isTouching) normX else current.touchpad.x,
                     y = if (isTouching) normY else current.touchpad.y,
                     isTouching = isTouching,
-                    isClicked = isPrimaryClick || current.buttonTouchpad,
-                    touchCount = if (isTouching) event.pointerCount else 0
+                    isClicked = isPrimaryClick,
+                    touchCount = if (isTouching) event.pointerCount else 0,
+                    isHardwareSupported = true
                 ),
                 touchedInputs = current.touchedInputs + detected,
                 recentEvents = newRecent,
@@ -377,12 +434,14 @@ class DS4InputRepository(private val context: Context) {
             )
         }
 
-        _diagnosticsState.update { diag ->
-            diag.copy(
-                detectedInputs = diag.detectedInputs + "Touchpad Surface" + (if (isPrimaryClick) setOf("Touchpad Click") else emptySet()),
-                totalEventsCount = diag.totalEventsCount + 1,
-                lastEventTime = System.currentTimeMillis()
-            )
+        if (isTouching || isPrimaryClick) {
+            _diagnosticsState.update { diag ->
+                diag.copy(
+                    detectedInputs = diag.detectedInputs + (if (isTouching) setOf("Touchpad Surface") else emptySet()) + (if (isPrimaryClick) setOf("Touchpad Click") else emptySet()),
+                    totalEventsCount = diag.totalEventsCount + 1,
+                    lastEventTime = System.currentTimeMillis()
+                )
+            }
         }
 
         return true
@@ -450,12 +509,12 @@ class DS4InputRepository(private val context: Context) {
                 rightStickY = ry,
                 l2Pressure = l2,
                 r2Pressure = r2,
-                buttonL2 = current.buttonL2 || l2 > 0.2f,
-                buttonR2 = current.buttonR2 || r2 > 0.2f,
-                dpadLeft = current.dpadLeft || dpadL,
-                dpadRight = current.dpadRight || dpadR,
-                dpadUp = current.dpadUp || dpadU,
-                dpadDown = current.dpadDown || dpadD,
+                buttonL2 = l2 > 0.2f,
+                buttonR2 = r2 > 0.2f,
+                dpadLeft = dpadL,
+                dpadRight = dpadR,
+                dpadUp = dpadU,
+                dpadDown = dpadD,
                 touchedInputs = current.touchedInputs + detected,
                 recentEvents = newRecent,
                 lastUpdated = System.currentTimeMillis()

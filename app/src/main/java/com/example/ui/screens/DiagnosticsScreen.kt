@@ -581,15 +581,26 @@ private fun MotionSensorHealthCard(sensors: MotionSensorsState) {
                     )
                 }
 
+                val badgeColor = when {
+                    !sensors.isAvailable -> MaterialTheme.colorScheme.surfaceVariant
+                    sensors.isMoving -> StatusWarning
+                    else -> StatusSuccess
+                }
+                val badgeText = when {
+                    !sensors.isAvailable -> "Idle"
+                    sensors.isMoving -> "In Motion"
+                    else -> "Stationary"
+                }
+
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = if (sensors.isAvailable) StatusSuccess.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant
+                    color = badgeColor.copy(alpha = 0.15f)
                 ) {
                     Text(
-                        text = if (sensors.isAvailable) "Active" else "Idle",
+                        text = badgeText,
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.Bold,
-                        color = if (sensors.isAvailable) StatusSuccess else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = badgeColor,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
@@ -598,8 +609,11 @@ private fun MotionSensorHealthCard(sensors: MotionSensorsState) {
             Spacer(modifier = Modifier.height(10.dp))
 
             DiagRow("Status", sensors.sensorStatus)
-            DiagRow("Accelerometer", "X:${String.format("%.2f", sensors.accelX)} Y:${String.format("%.2f", sensors.accelY)} Z:${String.format("%.2f", sensors.accelZ)} m/s²")
-            DiagRow("Gyroscope", "X:${String.format("%.2f", sensors.gyroX)} Y:${String.format("%.2f", sensors.gyroY)} Z:${String.format("%.2f", sensors.gyroZ)} rad/s")
+            DiagRow("Movement State", if (sensors.isMoving) "Active Movement Detected" else "Stationary (Noise Suppressed)")
+            DiagRow("Linear Accel (dyn)", "${String.format("%.2f", sensors.dynamicAcceleration)} m/s²")
+            DiagRow("Angular Speed", "${String.format("%.3f", sensors.angularSpeed)} rad/s")
+            DiagRow("Filtered Accel", "X:${String.format("%.2f", sensors.accelX)} Y:${String.format("%.2f", sensors.accelY)} Z:${String.format("%.2f", sensors.accelZ)} m/s²")
+            DiagRow("Calibrated Gyro", "X:${String.format("%.2f", sensors.gyroX)} Y:${String.format("%.2f", sensors.gyroY)} Z:${String.format("%.2f", sensors.gyroZ)} rad/s")
         }
     }
 }

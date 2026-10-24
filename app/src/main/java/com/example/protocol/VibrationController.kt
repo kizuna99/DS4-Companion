@@ -7,6 +7,7 @@ import android.util.Log
 import android.view.InputDevice
 import com.example.model.DS4Constants
 import com.example.model.DS4DeviceInfo
+import com.example.model.LightBarColor
 import com.example.model.TransportType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,7 +53,8 @@ class VibrationController(private val context: Context) {
     fun testVibration(
         durationMs: Long = 1000L,
         motor: MotorSelection = MotorSelection.BOTH,
-        activeDevice: DS4DeviceInfo?
+        activeDevice: DS4DeviceInfo?,
+        currentColor: LightBarColor = LightBarController.getActiveColor()
     ): VibrationTestResult {
         val leftIntensity = when (motor) {
             MotorSelection.BOTH, MotorSelection.LEFT_HEAVY -> 255
@@ -103,7 +105,7 @@ class VibrationController(private val context: Context) {
         val usbDev = usbTransmitter.findAttachedDs4UsbDevice()
         if (usbDev != null) {
             triggerVibrationState(durationMs)
-            return vibrateUsbOtg(durationMs, leftIntensity, rightIntensity, motor)
+            return vibrateUsbOtg(durationMs, leftIntensity, rightIntensity, motor, currentColor)
         }
 
         if (activeDevice == null) {
@@ -128,7 +130,10 @@ class VibrationController(private val context: Context) {
         }
     }
 
-    fun stopVibration(activeDevice: DS4DeviceInfo?): VibrationTestResult {
+    fun stopVibration(
+        activeDevice: DS4DeviceInfo?,
+        currentColor: LightBarColor = LightBarController.getActiveColor()
+    ): VibrationTestResult {
         activeVibrationJob?.cancel()
         activeVibrationJob = null
         _isVibrating.value = false
@@ -146,13 +151,15 @@ class VibrationController(private val context: Context) {
             stopInputDeviceVibration(dev)
         }
 
-        // Stop on USB OTG
+        // Stop on USB OTG, preserving current light bar color
         val usbDev = usbTransmitter.findAttachedDs4UsbDevice()
         if (usbDev != null) {
             val stopReport = DS4Protocol.createUsbOutputReport(
-                red = 0,
-                green = 55,
-                blue = 220,
+                red = currentColor.effectiveRed,
+                green = currentColor.effectiveGreen,
+                blue = currentColor.effectiveBlue,
+                flashOn = currentColor.flashOn,
+                flashOff = currentColor.flashOff,
                 rumbleWeak = 0,
                 rumbleStrong = 0
             )
@@ -245,20 +252,25 @@ class VibrationController(private val context: Context) {
         durationMs: Long,
         leftIntensity: Int,
         rightIntensity: Int,
-        motor: MotorSelection
+        motor: MotorSelection,
+        color: LightBarColor
     ): VibrationTestResult {
         return try {
             val startReport = DS4Protocol.createUsbOutputReport(
-                red = 0,
-                green = 55,
-                blue = 220,
+                red = color.effectiveRed,
+                green = color.effectiveGreen,
+                blue = color.effectiveBlue,
+                flashOn = color.flashOn,
+                flashOff = color.flashOff,
                 rumbleWeak = rightIntensity,
                 rumbleStrong = leftIntensity
             )
             val stopReport = DS4Protocol.createUsbOutputReport(
-                red = 0,
-                green = 55,
-                blue = 220,
+                red = color.effectiveRed,
+                green = color.effectiveGreen,
+                blue = color.effectiveBlue,
+                flashOn = color.flashOn,
+                flashOff = color.flashOff,
                 rumbleWeak = 0,
                 rumbleStrong = 0
             )

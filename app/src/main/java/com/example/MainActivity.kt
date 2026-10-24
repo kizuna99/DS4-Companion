@@ -113,8 +113,11 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        // Dispatches controller touchpad touches and physical clicks
-        viewModel.handleTouchEvent(event)
+        // Dispatches controller touchpad touches and physical clicks only.
+        // Phone touchscreen touches must NEVER be routed to the controller touchpad state!
+        if (!event.isFromSource(android.view.InputDevice.SOURCE_TOUCHSCREEN)) {
+            viewModel.handleTouchEvent(event)
+        }
         return super.dispatchTouchEvent(event)
     }
 }

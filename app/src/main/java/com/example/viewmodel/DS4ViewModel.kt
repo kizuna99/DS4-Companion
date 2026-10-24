@@ -79,13 +79,15 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val device = currentDevice.value
-        val result = vibrationController.testVibration(durationMs, motor, device)
+        val color = lightBarColor.value
+        val result = vibrationController.testVibration(durationMs, motor, device, color)
         _vibrationResult.value = result
     }
 
     fun stopVibration() {
         val device = currentDevice.value
-        val result = vibrationController.stopVibration(device)
+        val color = lightBarColor.value
+        val result = vibrationController.stopVibration(device, color)
         _vibrationResult.value = result
     }
 

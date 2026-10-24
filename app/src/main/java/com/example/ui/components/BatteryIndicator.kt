@@ -56,7 +56,7 @@ fun BatteryIndicator(
         batteryInfo.percentage == null -> MaterialTheme.colorScheme.onSurfaceVariant
         batteryInfo.status == BatteryStatus.HIGH -> StatusSuccess
         batteryInfo.status == BatteryStatus.MEDIUM -> StatusWarning
-        batteryInfo.status == BatteryStatus.LOW, batteryInfo.status == BatteryStatus.EMPTY -> StatusDanger
+        batteryInfo.status == BatteryStatus.LOW || batteryInfo.status == BatteryStatus.EMPTY -> StatusDanger
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
