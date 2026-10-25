@@ -12,9 +12,11 @@ import com.example.model.LightBarColor
 import com.example.protocol.MotorSelection
 import com.example.protocol.VibrationController
 import com.example.protocol.VibrationTestResult
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.conflate
 
 class DS4ViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -32,6 +34,7 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
     val diagnosticsState = repository.diagnosticsState
     val isSimulationMode = repository.isSimulationMode
     val batteryState = repository.batteryState
+    val motionSensors = repository.motionSensors
 
     // Bluetooth-specific flows
     val bluetoothConnectionState = bluetoothManager.connectionState
@@ -107,6 +110,7 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnect() {
+        stopVibration()
         repository.disconnectDevice()
     }
 
@@ -120,6 +124,18 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resetInputTester() {
         repository.resetInputTester()
+    }
+
+    fun simulateTouchpad(
+        x: Float,
+        y: Float,
+        isTouching: Boolean,
+        isClicked: Boolean,
+        x2: Float = 0f,
+        y2: Float = 0f,
+        isTouching2: Boolean = false
+    ) {
+        repository.simulateTouchpad(x, y, isTouching, isClicked, x2, y2, isTouching2)
     }
 
     fun clearDiagnostics() {

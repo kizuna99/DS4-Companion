@@ -17,10 +17,24 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
+import com.example.model.LightBarColor
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
@@ -42,6 +56,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -352,7 +369,11 @@ fun InputTesterScreen(
         item {
             TouchpadTelemetryCard(
                 touchpad = inputState.touchpad,
-                isTouchpadButtonPressed = inputState.buttonTouchpad
+                isTouchpadButtonPressed = inputState.buttonTouchpad,
+                lightBarColor = lightBarColor,
+                onSimulateTouch = { x, y, isTouching, isClicked, x2, y2, isTouching2 ->
+                    viewModel.simulateTouchpad(x, y, isTouching, isClicked, x2, y2, isTouching2)
+                }
             )
         }
 
@@ -607,9 +628,21 @@ private fun EventLogItem(event: InputLogEvent) {
 private fun TouchpadTelemetryCard(
     touchpad: TouchpadState,
     isTouchpadButtonPressed: Boolean,
+    lightBarColor: LightBarColor = LightBarColor.PLAYSTATION_BLUE,
+    onSimulateTouch: ((x: Float, y: Float, isTouching: Boolean, isClicked: Boolean, x2: Float, y2: Float, isTouching2: Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val isClicked = touchpad.isClicked || isTouchpadButtonPressed
+    val infiniteTransition = rememberInfiniteTransition(label = "touchpad_pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1100),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse_scale"
+    )
 
     Card(
         modifier = modifier
@@ -619,6 +652,7 @@ private fun TouchpadTelemetryCard(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
+            // Header Bar
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -631,139 +665,565 @@ private fun TouchpadTelemetryCard(
                         tint = MaterialTheme.colorScheme.primary
                     )
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Capacitive Touchpad",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Column {
+                        Text(
+                            text = "DS4 Capacitive Touchpad",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "1920 × 942 Multi-Touch • Tactile Click Switch",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
 
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            when {
-                                isClicked -> StatusSuccess
-                                touchpad.isTouching -> Color(0xFF00E5FF).copy(alpha = 0.2f)
-                                else -> MaterialTheme.colorScheme.surfaceVariant
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // Finger count pill
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (touchpad.touchCount > 0) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                else MaterialTheme.colorScheme.surfaceVariant
+                            )
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = when {
+                                touchpad.touchCount >= 2 || touchpad.isTouching2 -> "2 FINGERS"
+                                touchpad.touchCount == 1 || touchpad.isTouching -> "1 FINGER"
+                                else -> "0 TOUCH"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = if (touchpad.touchCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    // Click / Active Status Badge
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                when {
+                                    isClicked -> StatusSuccess
+                                    touchpad.isTouching -> Color(0xFF00E5FF).copy(alpha = 0.2f)
+                                    else -> MaterialTheme.colorScheme.surfaceVariant
+                                }
+                            )
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = when {
+                                isClicked -> "CLICKED"
+                                touchpad.isTouching -> "ACTIVE"
+                                else -> "IDLE"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = when {
+                                isClicked -> Color.White
+                                touchpad.isTouching -> MaterialTheme.colorScheme.primary
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant
                             }
-                        )
-                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Text(
-                        text = when {
-                            isClicked -> "CLICKED"
-                            touchpad.isTouching -> "TOUCH ACTIVE"
-                            else -> "IDLE"
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = when {
-                            isClicked -> Color.White
-                            touchpad.isTouching -> MaterialTheme.colorScheme.primary
-                            else -> MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "DualShock 4 2D capacitive surface with physical tactile click.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 2D Touchpad Canvas (Aspect ratio 2.1:1)
-            val borderColor = if (isClicked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-            val padBg = if (isClicked) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(2.1f)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(padBg)
-                    .border(
-                        width = if (isClicked) 2.5.dp else 1.dp,
-                        color = borderColor,
-                        shape = RoundedCornerShape(14.dp)
-                    )
-            ) {
-                val primaryColor = MaterialTheme.colorScheme.primary
-                val cyanColor = Color(0xFF00E5FF)
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val w = size.width
-                    val h = size.height
-
-                    // Grid lines (3x2 divisions)
-                    val gridColor = Color.White.copy(alpha = 0.08f)
-                    drawLine(gridColor, Offset(w * 0.33f, 0f), Offset(w * 0.33f, h), strokeWidth = 1f)
-                    drawLine(gridColor, Offset(w * 0.66f, 0f), Offset(w * 0.66f, h), strokeWidth = 1f)
-                    drawLine(gridColor, Offset(0f, h * 0.5f), Offset(w, h * 0.5f), strokeWidth = 1f)
-
-                    // Touch Indicator
-                    val posX = (w * touchpad.x).coerceIn(12f, w - 12f)
-                    val posY = (h * touchpad.y).coerceIn(12f, h - 12f)
-
-                    if (touchpad.isTouching || isClicked) {
-                        drawCircle(
-                            color = (if (isClicked) primaryColor else cyanColor).copy(alpha = 0.35f),
-                            radius = 24f,
-                            center = Offset(posX, posY)
-                        )
-                        drawCircle(
-                            color = if (isClicked) primaryColor else cyanColor,
-                            radius = 12f,
-                            center = Offset(posX, posY)
-                        )
-                        drawCircle(
-                            color = Color.White,
-                            radius = 5f,
-                            center = Offset(posX, posY)
-                        )
-                        val crossColor = (if (isClicked) primaryColor else cyanColor).copy(alpha = 0.4f)
-                        drawLine(crossColor, Offset(0f, posY), Offset(w, posY), strokeWidth = 1.5f)
-                        drawLine(crossColor, Offset(posX, 0f), Offset(posX, h), strokeWidth = 1.5f)
-                    } else {
-                        drawCircle(
-                            color = Color.White.copy(alpha = 0.2f),
-                            radius = 6f,
-                            center = Offset(w * 0.5f, h * 0.5f)
                         )
                     }
                 }
             }
 
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Quick Touchpad Simulation / Test Controls
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        onSimulateTouch?.invoke(0.35f, 0.45f, true, false, 0f, 0f, false)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("simulate_swipe_button"),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text("1-Pt Touch", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        onSimulateTouch?.invoke(0.28f, 0.50f, true, false, 0.72f, 0.50f, true)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("simulate_multi_button"),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text("2-Pt Touch", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                }
+
+                Button(
+                    onClick = {
+                        onSimulateTouch?.invoke(touchpad.x, touchpad.y, touchpad.isTouching, !isClicked, touchpad.x2, touchpad.y2, touchpad.isTouching2)
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .testTag("simulate_click_button"),
+                    colors = if (isClicked) ButtonDefaults.buttonColors(containerColor = StatusSuccess) else ButtonDefaults.buttonColors(),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text(if (isClicked) "Release" else "Click Pad", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        onSimulateTouch?.invoke(0.5f, 0.5f, false, false, 0f, 0f, false)
+                    },
+                    modifier = Modifier
+                        .weight(0.9f)
+                        .testTag("simulate_clear_button"),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Text("Clear", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                }
+            }
+
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Coordinates Row
+            // 2D DualShock 4 Touchpad Visualizer Canvas (~2.04:1 aspect ratio)
+            val barComposeColor = lightBarColor.toComposeColor()
+            val borderColor = when {
+                isClicked -> barComposeColor
+                touchpad.isTouching -> Color(0xFF00E5FF)
+                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+            }
+            val padBgGradient = Brush.verticalGradient(
+                colors = listOf(
+                    if (isClicked) barComposeColor.copy(alpha = 0.22f) else Color(0xFF161B24),
+                    if (isClicked) barComposeColor.copy(alpha = 0.12f) else Color(0xFF0E121A)
+                )
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(2.038f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(padBgGradient)
+                    .border(
+                        width = if (isClicked) 2.5.dp else 1.2.dp,
+                        color = borderColor,
+                        shape = RoundedCornerShape(16.dp)
+                    )
+                    .pointerInput(Unit) {
+                        detectDragGestures(
+                            onDragStart = { offset ->
+                                val nx = (offset.x / size.width).coerceIn(0f, 1f)
+                                val ny = (offset.y / size.height).coerceIn(0f, 1f)
+                                onSimulateTouch?.invoke(nx, ny, true, isClicked, 0f, 0f, false)
+                            },
+                            onDrag = { change, _ ->
+                                val nx = (change.position.x / size.width).coerceIn(0f, 1f)
+                                val ny = (change.position.y / size.height).coerceIn(0f, 1f)
+                                onSimulateTouch?.invoke(nx, ny, true, isClicked, 0f, 0f, false)
+                            },
+                            onDragEnd = {
+                                onSimulateTouch?.invoke(touchpad.x, touchpad.y, false, false, 0f, 0f, false)
+                            },
+                            onDragCancel = {
+                                onSimulateTouch?.invoke(touchpad.x, touchpad.y, false, false, 0f, 0f, false)
+                            }
+                        )
+                    }
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { offset ->
+                                val nx = (offset.x / size.width).coerceIn(0f, 1f)
+                                val ny = (offset.y / size.height).coerceIn(0f, 1f)
+                                onSimulateTouch?.invoke(nx, ny, true, false, 0f, 0f, false)
+                            }
+                        )
+                    }
+                    .testTag("touchpad_visualizer_canvas")
+            ) {
+                val primaryCyan = Color(0xFF00E5FF)
+                val secondaryAmber = Color(0xFFFF9100)
+
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val w = size.width
+                    val h = size.height
+
+                    // 1. DualShock 4 Top Light Bar Accent Strip (CUH-ZCT2 V2 touchpad)
+                    val stripWidth = w * 0.60f
+                    val stripLeft = (w - stripWidth) / 2f
+                    val stripTop = 4f
+                    val stripHeight = 5f
+
+                    // Ambient glow under light strip
+                    drawRoundRect(
+                        color = barComposeColor.copy(alpha = 0.35f),
+                        topLeft = Offset(stripLeft - 10f, 0f),
+                        size = Size(stripWidth + 20f, 14f),
+                        cornerRadius = CornerRadius(6f, 6f)
+                    )
+                    // Sharp light bar lens
+                    drawRoundRect(
+                        color = barComposeColor,
+                        topLeft = Offset(stripLeft, stripTop),
+                        size = Size(stripWidth, stripHeight),
+                        cornerRadius = CornerRadius(2.5f, 2.5f)
+                    )
+                    // Specular reflection highlight on strip
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = 0.7f),
+                        topLeft = Offset(stripLeft + 6f, stripTop + 1f),
+                        size = Size(stripWidth - 12f, 1.8f),
+                        cornerRadius = CornerRadius(1f, 1f)
+                    )
+
+                    // 2. Capacitive Sensor Dot Matrix Grid (subtle texture)
+                    val stepX = w / 16f
+                    val stepY = h / 8f
+                    for (ix in 1..15) {
+                        for (iy in 1..7) {
+                            drawCircle(
+                                color = Color.White.copy(alpha = 0.045f),
+                                radius = 1.2f,
+                                center = Offset(ix * stepX, iy * stepY)
+                            )
+                        }
+                    }
+
+                    // 3. Left / Right Tactile Button Division Line (Dashed)
+                    val dashEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f)
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.15f),
+                        start = Offset(w * 0.5f, h * 0.12f),
+                        end = Offset(w * 0.5f, h * 0.88f),
+                        strokeWidth = 1.2f,
+                        pathEffect = dashEffect
+                    )
+
+                    // Center Coordinate Crosshair Tick
+                    val cx = w * 0.5f
+                    val cy = h * 0.5f
+                    val crossLen = 10f
+                    drawLine(Color.White.copy(alpha = 0.25f), Offset(cx - crossLen, cy), Offset(cx + crossLen, cy), strokeWidth = 1.2f)
+                    drawLine(Color.White.copy(alpha = 0.25f), Offset(cx, cy - crossLen), Offset(cx, cy + crossLen), strokeWidth = 1.2f)
+
+                    // 4. Click Radial Shockwave Burst (when clicked)
+                    if (isClicked) {
+                        drawCircle(
+                            color = barComposeColor.copy(alpha = 0.18f),
+                            radius = w * 0.28f,
+                            center = Offset(cx, cy)
+                        )
+                        drawCircle(
+                            color = barComposeColor.copy(alpha = 0.45f),
+                            radius = w * 0.16f,
+                            center = Offset(cx, cy),
+                            style = Stroke(width = 2f)
+                        )
+                    }
+
+                    // 5. Contact Point 1 (Primary - Cyan)
+                    val p1Active = touchpad.isTouching || isClicked
+                    if (p1Active) {
+                        val p1x = (w * touchpad.x).coerceIn(16f, w - 16f)
+                        val p1y = (h * touchpad.y).coerceIn(16f, h - 16f)
+
+                        // Full-pad Guideline Crosshairs
+                        val laserColor = if (isClicked) barComposeColor.copy(alpha = 0.50f) else primaryCyan.copy(alpha = 0.45f)
+                        drawLine(laserColor, Offset(0f, p1y), Offset(w, p1y), strokeWidth = 1.5f)
+                        drawLine(laserColor, Offset(p1x, 0f), Offset(p1x, h), strokeWidth = 1.5f)
+
+                        // Edge Tick Markers
+                        drawRect(laserColor, topLeft = Offset(p1x - 3f, 0f), size = Size(6f, 6f))
+                        drawRect(laserColor, topLeft = Offset(p1x - 3f, h - 6f), size = Size(6f, 6f))
+                        drawRect(laserColor, topLeft = Offset(0f, p1y - 3f), size = Size(6f, 6f))
+                        drawRect(laserColor, topLeft = Offset(w - 6f, p1y - 3f), size = Size(6f, 6f))
+
+                        // Pulsing Outer Halo
+                        val haloColor = if (isClicked) barComposeColor else primaryCyan
+                        drawCircle(
+                            color = haloColor.copy(alpha = 0.22f),
+                            radius = 28f * pulseScale,
+                            center = Offset(p1x, p1y)
+                        )
+                        // Middle Ring
+                        drawCircle(
+                            color = haloColor,
+                            radius = 16f,
+                            center = Offset(p1x, p1y),
+                            style = Stroke(width = 2.5f)
+                        )
+                        // Solid Core
+                        drawCircle(
+                            color = haloColor.copy(alpha = 0.85f),
+                            radius = 9f,
+                            center = Offset(p1x, p1y)
+                        )
+                        // White Center Precision Dot
+                        drawCircle(
+                            color = Color.White,
+                            radius = 4f,
+                            center = Offset(p1x, p1y)
+                        )
+                    }
+
+                    // 6. Contact Point 2 (Secondary Multi-Touch - Amber)
+                    val p2Active = touchpad.isTouching2 || touchpad.touchCount >= 2
+                    if (p2Active) {
+                        val p2x = (w * touchpad.x2).coerceIn(16f, w - 16f)
+                        val p2y = (h * touchpad.y2).coerceIn(16f, h - 16f)
+
+                        // Full-pad Guideline Crosshairs for P2
+                        val laser2Color = secondaryAmber.copy(alpha = 0.45f)
+                        drawLine(laser2Color, Offset(0f, p2y), Offset(w, p2y), strokeWidth = 1.5f)
+                        drawLine(laser2Color, Offset(p2x, 0f), Offset(p2x, h), strokeWidth = 1.5f)
+
+                        // Connecting Vector Line Between P1 & P2
+                        if (p1Active) {
+                            val p1x = (w * touchpad.x).coerceIn(16f, w - 16f)
+                            val p1y = (h * touchpad.y).coerceIn(16f, h - 16f)
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.65f),
+                                start = Offset(p1x, p1y),
+                                end = Offset(p2x, p2y),
+                                strokeWidth = 2f,
+                                pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f), 0f)
+                            )
+                        }
+
+                        // Pulsing Outer Halo for P2
+                        drawCircle(
+                            color = secondaryAmber.copy(alpha = 0.22f),
+                            radius = 26f * pulseScale,
+                            center = Offset(p2x, p2y)
+                        )
+                        // Middle Ring
+                        drawCircle(
+                            color = secondaryAmber,
+                            radius = 15f,
+                            center = Offset(p2x, p2y),
+                            style = Stroke(width = 2.5f)
+                        )
+                        // Solid Core
+                        drawCircle(
+                            color = secondaryAmber.copy(alpha = 0.85f),
+                            radius = 8.5f,
+                            center = Offset(p2x, p2y)
+                        )
+                        // White Center Precision Dot
+                        drawCircle(
+                            color = Color.White,
+                            radius = 3.5f,
+                            center = Offset(p2x, p2y)
+                        )
+                    }
+
+                    // 7. Idle / Resting State Reticle (when no touches active)
+                    if (!p1Active && !p2Active) {
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.12f),
+                            radius = 18f,
+                            center = Offset(cx, cy),
+                            style = Stroke(width = 1.5f)
+                        )
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.25f),
+                            radius = 3f,
+                            center = Offset(cx, cy)
+                        )
+                    }
+                }
+
+                // Top Corner Hardware Coordinate Annotations
+                Text(
+                    text = "[0, 0]",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color.White.copy(alpha = 0.40f),
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(start = 10.dp, top = 8.dp)
+                )
+
+                Text(
+                    text = "[1920, 0]",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color.White.copy(alpha = 0.40f),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 10.dp, top = 8.dp)
+                )
+
+                Text(
+                    text = "[0, 942]",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color.White.copy(alpha = 0.40f),
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 10.dp, bottom = 8.dp)
+                )
+
+                Text(
+                    text = "[1920, 942]",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color.White.copy(alpha = 0.40f),
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 10.dp, bottom = 8.dp)
+                )
+
+                // Click Badge Center Notification
+                if (isClicked) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(barComposeColor.copy(alpha = 0.90f))
+                            .padding(horizontal = 14.dp, vertical = 6.dp)
+                            .testTag("touchpad_click_badge")
+                    ) {
+                        Text(
+                            text = "TACTILE SWITCH CLICKED",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                } else if (!touchpad.isTouching && !touchpad.isTouching2) {
+                    Text(
+                        text = "Touch Surface • Swipe / Drag to Test",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Color.White.copy(alpha = 0.45f),
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(top = 44.dp)
+                    )
+                }
+
+                // Floating Contact Point Indicator Badges
+                if (touchpad.isTouching || isClicked) {
+                    Box(
+                        modifier = Modifier
+                            .align(if (touchpad.x > 0.5f) Alignment.TopStart else Alignment.TopEnd)
+                            .padding(12.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF00E5FF).copy(alpha = 0.20f))
+                            .border(1.dp, Color(0xFF00E5FF), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .testTag("touchpad_contact_point")
+                    ) {
+                        Text(
+                            text = "P1 [X: ${touchpad.hardwareX}, Y: ${touchpad.hardwareY}]",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF00E5FF)
+                        )
+                    }
+                }
+
+                if (touchpad.isTouching2 || touchpad.touchCount >= 2) {
+                    Box(
+                        modifier = Modifier
+                            .align(if (touchpad.x2 > 0.5f) Alignment.BottomStart else Alignment.BottomEnd)
+                            .padding(12.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFFFF9100).copy(alpha = 0.20f))
+                            .border(1.dp, Color(0xFFFF9100), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .testTag("touchpad_contact_point_2")
+                    ) {
+                        Text(
+                            text = "P2 [X: ${touchpad.hardwareX2}, Y: ${touchpad.hardwareY2}]",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFF9100)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Coordinates & Hardware Telemetry Row 1
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 TouchMetricPill(
-                    label = "Touch X",
-                    value = String.format("%.3f", touchpad.x),
-                    subValue = "${(touchpad.x * 1920).toInt()} px",
+                    label = "Contact Point 1",
+                    value = if (touchpad.isTouching || isClicked) "${touchpad.hardwareX}, ${touchpad.hardwareY}" else "Idle",
+                    subValue = String.format("X: %.3f  Y: %.3f", touchpad.x, touchpad.y),
+                    isActive = touchpad.isTouching || isClicked,
                     modifier = Modifier.weight(1f)
                 )
 
                 TouchMetricPill(
-                    label = "Touch Y",
-                    value = String.format("%.3f", touchpad.y),
-                    subValue = "${(touchpad.y * 942).toInt()} px",
+                    label = "Contact Point 2",
+                    value = if (touchpad.isTouching2 || touchpad.touchCount >= 2) "${touchpad.hardwareX2}, ${touchpad.hardwareY2}" else "Standby",
+                    subValue = if (touchpad.isTouching2) String.format("X: %.3f  Y: %.3f", touchpad.x2, touchpad.y2) else "2-Point Multi-touch",
+                    isActive = touchpad.isTouching2 || touchpad.touchCount >= 2,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Coordinates & Hardware Telemetry Row 2
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TouchMetricPill(
+                    label = "Touchpad Zone",
+                    value = touchpad.activeZone,
+                    subValue = if (touchpad.x < 0.5f) "Left Microswitch Zone" else "Right Microswitch Zone",
+                    isActive = touchpad.isTouching || isClicked,
                     modifier = Modifier.weight(1f)
                 )
 
                 TouchMetricPill(
-                    label = "Tactile Click",
-                    value = if (isClicked) "ACTIVE" else "RELEASED",
-                    subValue = if (touchpad.touchCount > 0) "${touchpad.touchCount} finger(s)" else "0 fingers",
+                    label = "Tactile Switch",
+                    value = if (isClicked) "CLICKED" else "RELEASED",
+                    subValue = if (touchpad.touchCount > 0) "${touchpad.touchCount} Contact Point(s)" else "0 Contacts",
                     isActive = isClicked,
                     modifier = Modifier.weight(1f)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Hardware Specs Footer Callout
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Sensor: 1920 × 942 Capacitive Array",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "Dual-point Multi-touch",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary
                 )
             }
         }

@@ -14,8 +14,23 @@ data class TouchpadState(
     val isTouching: Boolean = false,
     val isClicked: Boolean = false,
     val touchCount: Int = 0,
-    val isHardwareSupported: Boolean = true
-)
+    val isHardwareSupported: Boolean = true,
+    val x2: Float = 0f,
+    val y2: Float = 0f,
+    val isTouching2: Boolean = false
+) {
+    val hardwareX: Int get() = (x * 1920f).toInt().coerceIn(0, 1920)
+    val hardwareY: Int get() = (y * 942f).toInt().coerceIn(0, 942)
+    val hardwareX2: Int get() = (x2 * 1920f).toInt().coerceIn(0, 1920)
+    val hardwareY2: Int get() = (y2 * 942f).toInt().coerceIn(0, 942)
+
+    val activeZone: String get() = when {
+        !isTouching && !isClicked -> "Neutral"
+        x < 0.45f -> "Left Click Zone"
+        x > 0.55f -> "Right Click Zone"
+        else -> "Center Zone"
+    }
+}
 
 data class MotionSensorsState(
     val accelX: Float = 0f,

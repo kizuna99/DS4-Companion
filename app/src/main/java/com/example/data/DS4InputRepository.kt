@@ -16,6 +16,7 @@ import com.example.model.InputLogEvent
 import com.example.model.InputState
 import com.example.model.LightBarApplyResult
 import com.example.model.LightBarColor
+import com.example.model.MotionSensorsState
 import com.example.model.TouchpadState
 import com.example.model.TransportType
 import com.example.protocol.DS4UsbTransmitter
@@ -27,6 +28,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -48,6 +50,7 @@ class DS4InputRepository(private val context: Context) {
     val discoveredDevices: StateFlow<List<DS4DeviceInfo>> = controllerManager.discoveredControllers
     val isSimulationMode: StateFlow<Boolean> = controllerManager.isSimulationMode
     val batteryState: StateFlow<BatteryInfo> = controllerManager.batteryRepository.batteryState
+    val motionSensors: StateFlow<MotionSensorsState> = motionSensorManager.motionSensors
 
     private val prefs = context.getSharedPreferences("ds4_companion_prefs", Context.MODE_PRIVATE)
 
@@ -215,8 +218,77 @@ class DS4InputRepository(private val context: Context) {
         _inputState.update {
             InputState(
                 touchedInputs = emptySet(),
-                recentEvents = emptyList()
+                recentEvents = emptyList(),
+                touchpad = TouchpadState(
+                    x = 0.5f,
+                    y = 0.5f,
+                    isTouching = false,
+                    isClicked = false,
+                    touchCount = 0,
+                    isHardwareSupported = true
+                )
             )
+        }
+    }
+
+    /**
+     * Programmatic simulation/injection for touchpad contact points.
+     * Used for interactive testing in UI and simulation mode.
+     */
+    fun simulateTouchpad(
+        x: Float,
+        y: Float,
+        isTouching: Boolean,
+        isClicked: Boolean,
+        x2: Float = 0f,
+        y2: Float = 0f,
+        isTouching2: Boolean = false
+    ) {
+        val count = when {
+            isTouching && isTouching2 -> 2
+            isTouching -> 1
+            else -> 0
+        }
+        val detected = mutableSetOf<String>()
+        if (isTouching) detected.add("Touchpad Surface")
+        if (isClicked) detected.add("Touchpad Click")
+
+        _inputState.update { current ->
+            var newRecent = current.recentEvents
+            if (isClicked && !current.buttonTouchpad) {
+                val log = InputLogEvent(name = "Touchpad Click", action = "PRESSED", value = "1")
+                newRecent = (listOf(log) + current.recentEvents).take(20)
+            } else if (!isClicked && current.buttonTouchpad) {
+                val log = InputLogEvent(name = "Touchpad Click", action = "RELEASED", value = "0")
+                newRecent = (listOf(log) + current.recentEvents).take(20)
+            }
+
+            current.copy(
+                buttonTouchpad = isClicked,
+                touchpad = current.touchpad.copy(
+                    x = x.coerceIn(0f, 1f),
+                    y = y.coerceIn(0f, 1f),
+                    isTouching = isTouching,
+                    isClicked = isClicked,
+                    touchCount = count,
+                    x2 = x2.coerceIn(0f, 1f),
+                    y2 = y2.coerceIn(0f, 1f),
+                    isTouching2 = isTouching2
+                ),
+                touchedInputs = current.touchedInputs + detected,
+                recentEvents = newRecent,
+                lastUpdated = System.currentTimeMillis()
+            )
+        }
+
+        if (isTouching || isClicked) {
+            _diagnosticsState.update { diag ->
+                diag.copy(
+                    detectedInputs = diag.detectedInputs + detected,
+                    totalEventsCount = diag.totalEventsCount + 1,
+                    lastEventTime = System.currentTimeMillis()
+                )
+            }
         }
     }
 
@@ -357,40 +429,43 @@ class DS4InputRepository(private val context: Context) {
         val dev = event.device ?: return false
         val activeDev = currentDevice.value
 
-        // 2. Validate device ID or DualShock 4 hardware signature
+        // 2. Validate device ID or DualShock 4 hardware signature (including touchpad sub-devices)
         val isMatchingActiveDevice = activeDev?.inputDeviceId != null && dev.id == activeDev.inputDeviceId
+        val devName = (dev.name ?: "").lowercase()
         val isDs4Hardware = DS4Constants.isDualShock4(dev.vendorId, dev.productId, dev.name) ||
-                dev.name.lowercase().contains("wireless controller") ||
-                dev.name.lowercase().contains("dualshock")
+                devName.contains("wireless controller") ||
+                devName.contains("dualshock") ||
+                devName.contains("touchpad")
 
         if (!isMatchingActiveDevice && !isDs4Hardware) {
             return false
         }
 
-        // 3. Ensure input source is touchpad, mouse, or pointer on the controller
-        val isTouchpadSource = (event.source and InputDevice.SOURCE_TOUCHPAD != 0) ||
-                (event.source and InputDevice.SOURCE_MOUSE != 0) ||
-                (event.source and InputDevice.SOURCE_TRACKBALL != 0) ||
-                (event.source and InputDevice.SOURCE_JOYSTICK != 0)
+        // 3. Ensure input source is touchpad, mouse, or pointer
+        val src = event.source
+        val isTouchpadSource = (src and InputDevice.SOURCE_TOUCHPAD != 0) ||
+                (src and InputDevice.SOURCE_MOUSE != 0) ||
+                (src and InputDevice.SOURCE_TRACKBALL != 0) ||
+                (src and InputDevice.SOURCE_CLASS_POINTER != 0)
 
         if (!isTouchpadSource) {
             return false
         }
 
         val action = event.actionMasked
-        val isTouching = action == MotionEvent.ACTION_DOWN ||
+        val isReleased = action == MotionEvent.ACTION_UP ||
+                action == MotionEvent.ACTION_HOVER_EXIT ||
+                action == MotionEvent.ACTION_CANCEL
+
+        val isTouching = !isReleased && (
+                action == MotionEvent.ACTION_DOWN ||
                 action == MotionEvent.ACTION_MOVE ||
-                action == MotionEvent.ACTION_HOVER_MOVE
+                action == MotionEvent.ACTION_HOVER_MOVE ||
+                action == MotionEvent.ACTION_SCROLL
+        )
 
         val isPrimaryClick = (event.buttonState and MotionEvent.BUTTON_PRIMARY != 0) ||
                 (action == MotionEvent.ACTION_BUTTON_PRESS && event.actionButton == MotionEvent.BUTTON_PRIMARY)
-
-        // Read normalized coordinates (0.0 to 1.0)
-        val xRange = dev.getMotionRange(MotionEvent.AXIS_X)?.range ?: 1920f
-        val yRange = dev.getMotionRange(MotionEvent.AXIS_Y)?.range ?: 942f
-
-        val normX = if (xRange > 1f) (event.x / xRange).coerceIn(0f, 1f) else event.x.coerceIn(0f, 1f)
-        val normY = if (yRange > 1f) (event.y / yRange).coerceIn(0f, 1f) else event.y.coerceIn(0f, 1f)
 
         _inputState.update { current ->
             val detected = mutableSetOf<String>()
@@ -409,7 +484,7 @@ class DS4InputRepository(private val context: Context) {
                     value = "1"
                 )
                 newRecent = (listOf(log) + current.recentEvents).take(20)
-            } else if (!isPrimaryClick && current.buttonTouchpad && action == MotionEvent.ACTION_BUTTON_RELEASE) {
+            } else if (!isPrimaryClick && current.buttonTouchpad && (action == MotionEvent.ACTION_BUTTON_RELEASE || isReleased)) {
                 val log = InputLogEvent(
                     name = "Touchpad Click",
                     action = "RELEASED",
@@ -418,15 +493,73 @@ class DS4InputRepository(private val context: Context) {
                 newRecent = (listOf(log) + current.recentEvents).take(20)
             }
 
+            // Read normalized coordinates (0.0 to 1.0)
+            var normX = current.touchpad.x
+            var normY = current.touchpad.y
+
+            if (isTouching) {
+                if (src and InputDevice.SOURCE_TOUCHPAD != 0) {
+                    val xRange = dev.getMotionRange(MotionEvent.AXIS_X)?.range ?: 1920f
+                    val yRange = dev.getMotionRange(MotionEvent.AXIS_Y)?.range ?: 942f
+                    normX = (event.x / (if (xRange > 1f) xRange else 1920f)).coerceIn(0f, 1f)
+                    normY = (event.y / (if (yRange > 1f) yRange else 942f)).coerceIn(0f, 1f)
+                } else {
+                    // Mouse pointer emulation
+                    val relX = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
+                    } else 0f
+                    val relY = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                        event.getAxisValue(MotionEvent.AXIS_RELATIVE_Y)
+                    } else 0f
+
+                    if (relX != 0f || relY != 0f) {
+                        normX = (current.touchpad.x + (relX / 800f)).coerceIn(0.02f, 0.98f)
+                        normY = (current.touchpad.y + (relY / 400f)).coerceIn(0.02f, 0.98f)
+                    } else {
+                        val dm = context.resources.displayMetrics
+                        val w = if (dm.widthPixels > 0) dm.widthPixels.toFloat() else 1080f
+                        val h = if (dm.heightPixels > 0) dm.heightPixels.toFloat() else 2400f
+                        normX = (event.x / w).coerceIn(0f, 1f)
+                        normY = (event.y / h).coerceIn(0f, 1f)
+                    }
+                }
+            }
+
+            // Multi-touch support for DualShock 4 (supports 2 concurrent contact points)
+            val hasSecondPointer = isTouching && event.pointerCount >= 2
+            var normX2 = current.touchpad.x2
+            var normY2 = current.touchpad.y2
+
+            if (hasSecondPointer) {
+                if (src and InputDevice.SOURCE_TOUCHPAD != 0) {
+                    val xRange = dev.getMotionRange(MotionEvent.AXIS_X)?.range ?: 1920f
+                    val yRange = dev.getMotionRange(MotionEvent.AXIS_Y)?.range ?: 942f
+                    normX2 = (event.getX(1) / (if (xRange > 1f) xRange else 1920f)).coerceIn(0f, 1f)
+                    normY2 = (event.getY(1) / (if (yRange > 1f) yRange else 942f)).coerceIn(0f, 1f)
+                } else {
+                    val dm = context.resources.displayMetrics
+                    val w = if (dm.widthPixels > 0) dm.widthPixels.toFloat() else 1080f
+                    val h = if (dm.heightPixels > 0) dm.heightPixels.toFloat() else 2400f
+                    normX2 = (event.getX(1) / w).coerceIn(0f, 1f)
+                    normY2 = (event.getY(1) / h).coerceIn(0f, 1f)
+                }
+            } else if (!isTouching) {
+                normX2 = 0f
+                normY2 = 0f
+            }
+
             current.copy(
                 buttonTouchpad = isPrimaryClick,
                 touchpad = TouchpadState(
-                    x = if (isTouching) normX else current.touchpad.x,
-                    y = if (isTouching) normY else current.touchpad.y,
+                    x = normX,
+                    y = normY,
                     isTouching = isTouching,
                     isClicked = isPrimaryClick,
-                    touchCount = if (isTouching) event.pointerCount else 0,
-                    isHardwareSupported = true
+                    touchCount = if (isTouching) maxOf(event.pointerCount, 1) else 0,
+                    isHardwareSupported = true,
+                    x2 = normX2,
+                    y2 = normY2,
+                    isTouching2 = hasSecondPointer
                 ),
                 touchedInputs = current.touchedInputs + detected,
                 recentEvents = newRecent,

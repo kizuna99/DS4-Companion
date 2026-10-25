@@ -74,7 +74,12 @@ class MotionSensorManager(private val context: Context) {
         const val DYNAMIC_ACCEL_THRESHOLD = 0.32f   // m/s² dynamic movement threshold
         const val ANGULAR_SPEED_THRESHOLD = 0.075f  // rad/s angular motion threshold
         const val STATIONARY_SAMPLES_REQUIRED = 8   // samples before locking bias
+        const val UI_UPDATE_INTERVAL_MS = 16L       // ~60Hz (16ms) StateFlow UI emission throttle to eliminate screen stuttering
+        const val MAX_VALID_ACCEL = 100f            // m/s² spike filter
+        const val MAX_VALID_GYRO = 50f              // rad/s spike filter
     }
+
+    private var lastUiEmissionTime = 0L
 
     private val sensorListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent?) {
@@ -87,6 +92,15 @@ class MotionSensorManager(private val context: Context) {
                         val rawX = values[0]
                         val rawY = values[1]
                         val rawZ = values[2]
+
+                        // Reject NaN, Infinities, and artificial spikes
+                        if (rawX.isNaN() || rawY.isNaN() || rawZ.isNaN() ||
+                            rawX.isInfinite() || rawY.isInfinite() || rawZ.isInfinite() ||
+                            abs(rawX) > MAX_VALID_ACCEL || abs(rawY) > MAX_VALID_ACCEL || abs(rawZ) > MAX_VALID_ACCEL
+                        ) {
+                            return
+                        }
+
                         latestRawAccelX = rawX
                         latestRawAccelY = rawY
                         latestRawAccelZ = rawZ
@@ -97,7 +111,7 @@ class MotionSensorManager(private val context: Context) {
                             gravityZ = rawZ
                             hasGravityInit = true
                         } else {
-                            // Low-pass filter to estimate gravitational vector
+                            // Low-pass filter to decouple earth gravity from dynamic motion
                             val alpha = 0.85f
                             gravityX = alpha * gravityX + (1f - alpha) * rawX
                             gravityY = alpha * gravityY + (1f - alpha) * rawY
@@ -116,6 +130,15 @@ class MotionSensorManager(private val context: Context) {
                         val rawX = values[0]
                         val rawY = values[1]
                         val rawZ = values[2]
+
+                        // Reject NaN, Infinities, and artificial spikes
+                        if (rawX.isNaN() || rawY.isNaN() || rawZ.isNaN() ||
+                            rawX.isInfinite() || rawY.isInfinite() || rawZ.isInfinite() ||
+                            abs(rawX) > MAX_VALID_GYRO || abs(rawY) > MAX_VALID_GYRO || abs(rawZ) > MAX_VALID_GYRO
+                        ) {
+                            return
+                        }
+
                         latestRawGyroX = rawX
                         latestRawGyroY = rawY
                         latestRawGyroZ = rawZ
@@ -129,7 +152,59 @@ class MotionSensorManager(private val context: Context) {
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
     }
 
-    private fun updateMotionState() {
+    /**
+     * Process raw sensor samples directly from physical HID reports or tests.
+     */
+    fun processRawSensorSample(
+        rawAccelX: Float,
+        rawAccelY: Float,
+        rawAccelZ: Float,
+        rawGyroX: Float,
+        rawGyroY: Float,
+        rawGyroZ: Float,
+        timestampMs: Long = android.os.SystemClock.uptimeMillis()
+    ) {
+        // Reject NaN, Infinities, and artificial spikes
+        if (rawAccelX.isNaN() || rawAccelY.isNaN() || rawAccelZ.isNaN() ||
+            rawAccelX.isInfinite() || rawAccelY.isInfinite() || rawAccelZ.isInfinite() ||
+            abs(rawAccelX) > MAX_VALID_ACCEL || abs(rawAccelY) > MAX_VALID_ACCEL || abs(rawAccelZ) > MAX_VALID_ACCEL ||
+            rawGyroX.isNaN() || rawGyroY.isNaN() || rawGyroZ.isNaN() ||
+            rawGyroX.isInfinite() || rawGyroY.isInfinite() || rawGyroZ.isInfinite() ||
+            abs(rawGyroX) > MAX_VALID_GYRO || abs(rawGyroY) > MAX_VALID_GYRO || abs(rawGyroZ) > MAX_VALID_GYRO
+        ) {
+            return
+        }
+
+        latestRawAccelX = rawAccelX
+        latestRawAccelY = rawAccelY
+        latestRawAccelZ = rawAccelZ
+        latestRawGyroX = rawGyroX
+        latestRawGyroY = rawGyroY
+        latestRawGyroZ = rawGyroZ
+
+        if (!hasGravityInit) {
+            gravityX = rawAccelX
+            gravityY = rawAccelY
+            gravityZ = rawAccelZ
+            hasGravityInit = true
+        } else {
+            // Low-pass filter to decouple earth gravity from dynamic motion
+            val alpha = 0.85f
+            gravityX = alpha * gravityX + (1f - alpha) * rawAccelX
+            gravityY = alpha * gravityY + (1f - alpha) * rawAccelY
+            gravityZ = alpha * gravityZ + (1f - alpha) * rawAccelZ
+        }
+
+        val dynX = rawAccelX - gravityX
+        val dynY = rawAccelY - gravityY
+        val dynZ = rawAccelZ - gravityZ
+        latestDynamicAccel = sqrt(dynX * dynX + dynY * dynY + dynZ * dynZ)
+        latestAngularSpeed = sqrt(rawGyroX * rawGyroX + rawGyroY * rawGyroY + rawGyroZ * rawGyroZ)
+
+        updateMotionState(timestampMs)
+    }
+
+    private fun updateMotionState(now: Long = android.os.SystemClock.uptimeMillis()) {
         val isStationaryNow = latestDynamicAccel < DYNAMIC_ACCEL_THRESHOLD && latestAngularSpeed < ANGULAR_SPEED_THRESHOLD
 
         if (isStationaryNow) {
@@ -173,21 +248,31 @@ class MotionSensorManager(private val context: Context) {
             else -> "Stationary (Noise Filtered)"
         }
 
-        _motionSensors.value = MotionSensorsState(
-            accelX = filteredAccelX,
-            accelY = filteredAccelY,
-            accelZ = filteredAccelZ,
-            gyroX = filteredGyroX,
-            gyroY = filteredGyroY,
-            gyroZ = filteredGyroZ,
-            isMoving = isMoving,
-            isStationary = !isMoving,
-            dynamicAcceleration = latestDynamicAccel,
-            angularSpeed = latestAngularSpeed,
-            isCalibrated = isCalibrated,
-            isAvailable = true,
-            sensorStatus = statusText
-        )
+        val current = _motionSensors.value
+        val stateChanged = isMoving != current.isMoving || isCalibrated != current.isCalibrated
+
+        // StateFlow-based 60Hz (~16ms) throttling mechanism:
+        // Raw sensor calculations continue running at native hardware polling rate (up to 1000Hz),
+        // while StateFlow UI updates are throttled to 60Hz (~16ms) to eliminate Compose recomposition storms,
+        // while always immediately dispatching meaningful state transitions (motion <-> stationary)
+        if (stateChanged || (now - lastUiEmissionTime) >= UI_UPDATE_INTERVAL_MS) {
+            lastUiEmissionTime = now
+            _motionSensors.value = MotionSensorsState(
+                accelX = filteredAccelX,
+                accelY = filteredAccelY,
+                accelZ = filteredAccelZ,
+                gyroX = filteredGyroX,
+                gyroY = filteredGyroY,
+                gyroZ = filteredGyroZ,
+                isMoving = isMoving,
+                isStationary = !isMoving,
+                dynamicAcceleration = latestDynamicAccel,
+                angularSpeed = latestAngularSpeed,
+                isCalibrated = isCalibrated,
+                isAvailable = true,
+                sensorStatus = statusText
+            )
+        }
     }
 
     fun resetCalibration() {
@@ -323,7 +408,7 @@ class MotionSensorManager(private val context: Context) {
                         sensorStatus = "Active Movement (Simulation)"
                     )
                 }
-                delay(30)
+                delay(16) // 60Hz (~16ms) simulation update rate for smooth UI rendering
             }
         }
     }

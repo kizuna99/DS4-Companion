@@ -79,7 +79,7 @@ class VibrationController(private val context: Context) {
         if (devId != null) {
             val inputDev = InputDevice.getDevice(devId)
             if (inputDev != null) {
-                val inputResult = vibrateInputDevice(inputDev, durationMs, leftIntensity, rightIntensity)
+                val inputResult = vibrateInputDevice(inputDev, durationMs, leftIntensity, rightIntensity, motor)
                 if (inputResult != null && inputResult.success) {
                     triggerVibrationState(durationMs)
                     return inputResult
@@ -87,13 +87,14 @@ class VibrationController(private val context: Context) {
             }
         }
 
-        // Also check all joystick InputDevices
+        // Also check all joystick or gamepad InputDevices
         for (id in InputDevice.getDeviceIds()) {
             val dev = InputDevice.getDevice(id) ?: continue
             if (DS4Constants.isDualShock4(dev.vendorId, dev.productId, dev.name) ||
-                (dev.sources and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK)
+                (dev.sources and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK) ||
+                (dev.sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD)
             ) {
-                val inputResult = vibrateInputDevice(dev, durationMs, leftIntensity, rightIntensity)
+                val inputResult = vibrateInputDevice(dev, durationMs, leftIntensity, rightIntensity, motor)
                 if (inputResult != null && inputResult.success) {
                     triggerVibrationState(durationMs)
                     return inputResult
@@ -115,9 +116,15 @@ class VibrationController(private val context: Context) {
             )
         }
 
+        val transportDesc = when (activeDevice.transport) {
+            TransportType.BLUETOOTH -> "Bluetooth (HID)"
+            TransportType.USB_OTG -> "USB OTG"
+            TransportType.SYSTEM_INPUT_DEVICE -> "System Input Device"
+            TransportType.SIMULATION -> "Simulation"
+        }
         return VibrationTestResult(
             false,
-            "Connected controller does not expose rumble motors over current transport. Connect via USB OTG for direct hardware control."
+            "Connected controller did not accept vibration over $transportDesc. Connect via USB OTG for direct hardware control."
         )
     }
 
@@ -190,57 +197,105 @@ class VibrationController(private val context: Context) {
         device: InputDevice,
         durationMs: Long,
         leftIntensity: Int,
-        rightIntensity: Int
+        rightIntensity: Int,
+        motor: MotorSelection
     ): VibrationTestResult? {
         try {
-            // Android 12+ VibratorManager with multi-channel support
+            val isBluetooth = (device.sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD) ||
+                    (device.sources and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK)
+            val transportLabel = if (isBluetooth) "Bluetooth HID" else "InputDevice"
+
+            // 1. Android 12+ (API 31+) VibratorManager with multi-channel and CombinedVibration
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val vm = device.vibratorManager
                 if (vm != null) {
                     val ids = vm.vibratorIds
-                    if (ids.isNotEmpty()) {
-                        if (ids.size >= 2) {
-                            // Left motor (vibrator 0)
+                    if (ids.size >= 2) {
+                        try {
+                            val comboBuilder = android.os.CombinedVibration.startParallel()
+                            if (leftIntensity > 0) {
+                                comboBuilder.addVibrator(
+                                    ids[0],
+                                    VibrationEffect.createOneShot(durationMs, leftIntensity)
+                                )
+                            }
+                            if (rightIntensity > 0) {
+                                comboBuilder.addVibrator(
+                                    ids[1],
+                                    VibrationEffect.createOneShot(durationMs, rightIntensity)
+                                )
+                            }
+                            vm.vibrate(comboBuilder.combine())
+                            return VibrationTestResult(
+                                true,
+                                "$transportLabel: ${motor.label} active via VibratorManager (${durationMs}ms)."
+                            )
+                        } catch (e: Exception) {
+                            Log.w(TAG, "CombinedVibration failed, trying individual vibrators: ${e.message}")
                             if (leftIntensity > 0) {
                                 vm.getVibrator(ids[0]).vibrate(
                                     VibrationEffect.createOneShot(durationMs, leftIntensity)
                                 )
                             }
-                            // Right motor (vibrator 1)
                             if (rightIntensity > 0) {
                                 vm.getVibrator(ids[1]).vibrate(
                                     VibrationEffect.createOneShot(durationMs, rightIntensity)
                                 )
                             }
-                        } else {
+                            return VibrationTestResult(
+                                true,
+                                "$transportLabel: ${motor.label} active via dual Vibrators (${durationMs}ms)."
+                            )
+                        }
+                    } else if (ids.size == 1) {
+                        val maxIntensity = maxOf(leftIntensity, rightIntensity).coerceAtLeast(1)
+                        vm.getVibrator(ids[0]).vibrate(
+                            VibrationEffect.createOneShot(durationMs, maxIntensity)
+                        )
+                        return VibrationTestResult(
+                            true,
+                            "$transportLabel: Single-channel vibration active via VibratorManager (${durationMs}ms)."
+                        )
+                    } else {
+                        // Some Bluetooth HID drivers have empty vibratorIds, but defaultVibrator works
+                        try {
                             val maxIntensity = maxOf(leftIntensity, rightIntensity).coerceAtLeast(1)
                             vm.defaultVibrator.vibrate(
                                 VibrationEffect.createOneShot(durationMs, maxIntensity)
                             )
+                            return VibrationTestResult(
+                                true,
+                                "$transportLabel: Rumble active via default VibratorManager (${durationMs}ms)."
+                            )
+                        } catch (e: Exception) {
+                            Log.d(TAG, "VibratorManager default vibrate fallback: ${e.message}")
                         }
-                        return VibrationTestResult(
-                            true,
-                            "Vibration triggered via Android VibratorManager (${durationMs}ms)."
-                        )
                     }
                 }
             }
 
-            // Legacy InputDevice Vibrator
+            // 2. Fallback to InputDevice Vibrator (API 26+)
+            // CRITICAL: Do NOT check vibrator.hasVibrator() == true, because Android's
+            // Bluetooth HID driver often returns false for hasVibrator() on DS4 controllers
+            // even though calling vibrate() successfully dispatches rumble.
             @Suppress("DEPRECATION")
             val vibrator = device.vibrator
-            if (vibrator != null && vibrator.hasVibrator()) {
-                val maxIntensity = maxOf(leftIntensity, rightIntensity).coerceAtLeast(1)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    vibrator.vibrate(VibrationEffect.createOneShot(durationMs, maxIntensity))
-                } else {
-                    @Suppress("DEPRECATION")
-                    vibrator.vibrate(durationMs)
+            if (vibrator != null) {
+                try {
+                    val maxIntensity = maxOf(leftIntensity, rightIntensity).coerceAtLeast(1)
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        vibrator.vibrate(VibrationEffect.createOneShot(durationMs, maxIntensity))
+                    } else {
+                        @Suppress("DEPRECATION")
+                        vibrator.vibrate(durationMs)
+                    }
+                    return VibrationTestResult(
+                        true,
+                        "$transportLabel: Rumble dispatched via InputDevice Vibrator (${durationMs}ms)."
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "InputDevice vibrator call failed: ${e.message}")
                 }
-                return VibrationTestResult(
-                    true,
-                    "Vibration triggered via InputDevice Vibrator (${durationMs}ms)."
-                )
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to vibrate InputDevice", e)

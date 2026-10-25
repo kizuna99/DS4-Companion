@@ -22,7 +22,8 @@ object DS4Constants {
         return (lower.contains("wireless controller") && (vendorId == SONY_VENDOR_ID || vendorId == 0)) ||
                 lower.contains("dualshock 4") ||
                 lower.contains("sony interactive entertainment") ||
-                (vendorId == SONY_VENDOR_ID && lower.contains("controller"))
+                (vendorId == SONY_VENDOR_ID && (lower.contains("controller") || lower.contains("touchpad"))) ||
+                (lower.contains("touchpad") && (lower.contains("wireless") || lower.contains("sony") || lower.contains("dualshock")))
     }
 
     fun isGamepadOrJoystick(sources: Int): Boolean {

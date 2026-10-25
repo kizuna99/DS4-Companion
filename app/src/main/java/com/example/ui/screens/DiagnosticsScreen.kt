@@ -45,6 +45,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -58,9 +59,14 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.conflate
 import com.example.model.CenteringStatus
+import com.example.model.DS4DeviceInfo
 import com.example.model.DiagnosticsState
 import com.example.model.MotionSensorsState
+import com.example.model.TransportType
 import com.example.protocol.MotorSelection
 import com.example.protocol.VibrationTestResult
 import com.example.ui.theme.StatusDanger
@@ -77,10 +83,16 @@ fun DiagnosticsScreen(
 ) {
     val diagState by viewModel.diagnosticsState.collectAsStateWithLifecycle()
     val currentDevice by viewModel.currentDevice.collectAsStateWithLifecycle()
-    val inputState by viewModel.inputState.collectAsStateWithLifecycle()
     val vibrationResult by viewModel.vibrationResult.collectAsStateWithLifecycle()
     val isVibrating by viewModel.isVibrating.collectAsStateWithLifecycle()
     val isVibrationEnabled by viewModel.isVibrationEnabled.collectAsStateWithLifecycle()
+
+    // Auto-stop vibration when leaving this screen
+    DisposableEffect(Unit) {
+        onDispose {
+            viewModel.stopVibration()
+        }
+    }
 
     LazyColumn(
         modifier = modifier
@@ -171,15 +183,16 @@ fun DiagnosticsScreen(
         item {
             VibrationDiagnosticCard(
                 viewModel = viewModel,
+                currentDevice = currentDevice,
                 vibrationResult = vibrationResult,
                 isVibrating = isVibrating,
                 isVibrationEnabled = isVibrationEnabled
             )
         }
 
-        // 3. 6-Axis Motion Sensor (IMU) Health Check
+        // 3. 6-Axis Motion Sensor (IMU) Health Check (isolated observation to prevent full screen recomposition)
         item {
-            MotionSensorHealthCard(sensors = inputState.motionSensors)
+            MotionSensorHealthCard(motionSensorsFlow = viewModel.motionSensors)
         }
 
         // 4. Real-Time Stick Centering & Drift Telemetry
@@ -377,12 +390,29 @@ fun DiagnosticsScreen(
 @Composable
 private fun VibrationDiagnosticCard(
     viewModel: DS4ViewModel,
+    currentDevice: DS4DeviceInfo?,
     vibrationResult: VibrationTestResult?,
     isVibrating: Boolean,
     isVibrationEnabled: Boolean
 ) {
     var selectedMotor by remember { mutableStateOf(MotorSelection.BOTH) }
     var selectedDurationMs by remember { mutableLongStateOf(1000L) }
+
+    val transportLabel = when (currentDevice?.transport) {
+        TransportType.BLUETOOTH -> "Bluetooth (HID)"
+        TransportType.USB_OTG -> "USB OTG"
+        TransportType.SYSTEM_INPUT_DEVICE -> "System Input"
+        TransportType.SIMULATION -> "Simulation"
+        null -> "No Controller"
+    }
+
+    val (statusLabel, statusColor) = when {
+        !isVibrationEnabled -> "DISABLED" to MaterialTheme.colorScheme.onSurfaceVariant
+        isVibrating -> "ACTIVE / BUZZING" to StatusWarning
+        vibrationResult != null && !vibrationResult.success -> "FAILED" to StatusDanger
+        vibrationResult != null && vibrationResult.success -> "TESTED / READY" to StatusSuccess
+        else -> "READY" to StatusSuccess
+    }
 
     Card(
         modifier = Modifier
@@ -436,6 +466,61 @@ private fun VibrationDiagnosticCard(
                         onCheckedChange = { viewModel.setVibrationEnabled(it) },
                         modifier = Modifier.testTag("vibration_on_off_switch")
                     )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Transport & Haptic Status Badges
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Transport: ",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = transportLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = statusColor.copy(alpha = 0.15f),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = "Status: ",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = statusLabel,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = statusColor
+                        )
+                    }
                 }
             }
 
@@ -557,7 +642,16 @@ private fun VibrationDiagnosticCard(
 }
 
 @Composable
-private fun MotionSensorHealthCard(sensors: MotionSensorsState) {
+private fun MotionSensorHealthCard(
+    motionSensorsFlow: Flow<MotionSensorsState>
+) {
+    // Ensure the state update flow uses conflate() to drop intermediate stale sensor data points before UI rendering
+    val conflatedFlow = remember(motionSensorsFlow) { motionSensorsFlow.conflate() }
+    val initialSensors = remember(motionSensorsFlow) {
+        (motionSensorsFlow as? StateFlow<MotionSensorsState>)?.value ?: MotionSensorsState()
+    }
+    // Collect with lifecycle awareness so IMU data collection suspends when the app/screen is in the background
+    val sensors by conflatedFlow.collectAsStateWithLifecycle(initialValue = initialSensors)
     Card(
         modifier = Modifier
             .fillMaxWidth()

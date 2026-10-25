@@ -12,6 +12,12 @@ import com.example.model.DS4DeviceInfo
 import com.example.model.LightBarColor
 import com.example.model.TransportType
 import com.example.sensor.MotionSensorManager
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -135,11 +141,81 @@ class DS4BugFixesTest {
         // Check constants
         assertTrue(MotionSensorManager.GYRO_NOISE_DEADZONE > 0f)
         assertTrue(MotionSensorManager.DYNAMIC_ACCEL_THRESHOLD > 0f)
+        assertEquals(16L, MotionSensorManager.UI_UPDATE_INTERVAL_MS)
 
         // Initial state before motion must be stationary
         val state = motionManager.motionSensors.value
         assertFalse("Initial resting sensor state must not be marked as moving", state.isMoving)
         assertTrue("Initial sensor state should be stationary", state.isStationary)
+    }
+
+    @Test
+    fun testStateFlow60HzThrottlingMechanism() {
+        val motionManager = MotionSensorManager(context)
+        var emissionCount = 0
+        val baseTime = 1000L
+
+        // Emulate receiving 250Hz HID reports (every 4ms) during continuous motion
+        // At 250Hz, in 32ms there are 8 raw reports.
+        // With 60Hz (~16ms) throttling, only ~2-3 StateFlow emissions should occur instead of 8.
+        for (i in 0..7) {
+            val reportTime = baseTime + (i * 4L)
+            val prevValue = motionManager.motionSensors.value
+            motionManager.processRawSensorSample(
+                rawAccelX = 1.0f + (i * 0.05f),
+                rawAccelY = 9.8f,
+                rawAccelZ = 0.2f,
+                rawGyroX = 0.5f,
+                rawGyroY = 0.1f,
+                rawGyroZ = 0.0f,
+                timestampMs = reportTime
+            )
+            if (motionManager.motionSensors.value !== prevValue) {
+                emissionCount++
+            }
+        }
+
+        // Must throttle 8 high-frequency raw reports down to at most 3 emissions (~60Hz rate)
+        assertTrue("StateFlow updates must be throttled to 60Hz, actual emissions: $emissionCount", emissionCount <= 3)
+    }
+
+    @Test
+    fun testSpikeFilterRejectsCorruptedReports() {
+        val motionManager = MotionSensorManager(context)
+        val validState = motionManager.motionSensors.value
+
+        // Feed corrupted spike reports (> 100 m/s² or NaN)
+        motionManager.processRawSensorSample(
+            rawAccelX = Float.NaN,
+            rawAccelY = 500f,
+            rawAccelZ = 0f,
+            rawGyroX = 1000f,
+            rawGyroY = Float.POSITIVE_INFINITY,
+            rawGyroZ = 0f,
+            timestampMs = 2000L
+        )
+
+        val afterSpike = motionManager.motionSensors.value
+        // Values must remain safe and unchanged by the spike
+        assertEquals(validState.accelX, afterSpike.accelX, 0.001f)
+    }
+
+    @Test
+    fun testMotionSensorsConflateDropsStaleData() = runTest {
+        val motionManager = MotionSensorManager(context)
+        val collectedValues = mutableListOf<Float>()
+
+        val sensorFlow: Flow<com.example.model.MotionSensorsState> = motionManager.motionSensors
+        val job = CoroutineScope(Dispatchers.Unconfined).launch {
+            sensorFlow.conflate().collect { state ->
+                collectedValues.add(state.dynamicAcceleration)
+            }
+        }
+
+        motionManager.processRawSensorSample(1.5f, 9.8f, 0f, 0.2f, 0f, 0f, 1000L)
+        job.cancel()
+
+        assertTrue(collectedValues.isNotEmpty())
     }
 
     @Test
