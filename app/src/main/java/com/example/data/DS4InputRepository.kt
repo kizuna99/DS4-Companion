@@ -215,6 +215,7 @@ class DS4InputRepository(private val context: Context) {
     }
 
     fun resetInputTester() {
+        val isHardwareActive = controllerManager.activeController.value != null || controllerManager.isSimulationMode.value
         _inputState.update {
             InputState(
                 touchedInputs = emptySet(),
@@ -225,7 +226,11 @@ class DS4InputRepository(private val context: Context) {
                     isTouching = false,
                     isClicked = false,
                     touchCount = 0,
-                    isHardwareSupported = true
+                    isHardwareSupported = isHardwareActive,
+                    x2 = 0f,
+                    y2 = 0f,
+                    isTouching2 = false,
+                    id = 0
                 )
             )
         }
@@ -233,7 +238,7 @@ class DS4InputRepository(private val context: Context) {
 
     /**
      * Programmatic simulation/injection for touchpad contact points.
-     * Used for interactive testing in UI and simulation mode.
+     * Only permitted when Simulation Mode is explicitly enabled.
      */
     fun simulateTouchpad(
         x: Float,
@@ -244,6 +249,9 @@ class DS4InputRepository(private val context: Context) {
         y2: Float = 0f,
         isTouching2: Boolean = false
     ) {
+        if (!controllerManager.isSimulationMode.value) {
+            return
+        }
         val count = when {
             isTouching && isTouching2 -> 2
             isTouching -> 1
@@ -409,49 +417,61 @@ class DS4InputRepository(private val context: Context) {
         return handled
     }
 
-    private fun isTouchpadOrPointerEvent(event: MotionEvent): Boolean {
-        // Immediately reject any phone touchscreen interactions
-        if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
-            return false
-        }
-        val src = event.source
-        return (src and InputDevice.SOURCE_TOUCHPAD != 0) ||
-                (src and InputDevice.SOURCE_MOUSE != 0) ||
-                (src and InputDevice.SOURCE_TRACKBALL != 0)
-    }
-
-    private fun handlePointerOrTouchEvent(event: MotionEvent): Boolean {
+    /**
+     * Identifies if a MotionEvent originates genuinely from a DualShock 4 controller's
+     * physical touchpad/pointer sub-device and NEVER from the phone's touchscreen or standard external mice.
+     */
+    fun isDs4PointerEvent(event: MotionEvent): Boolean {
         // 1. Phone touchscreen touches must NEVER trigger controller touchpad input
         if (event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)) {
             return false
         }
-
         val dev = event.device ?: return false
-        val activeDev = currentDevice.value
-
-        // 2. Validate device ID or DualShock 4 hardware signature (including touchpad sub-devices)
-        val isMatchingActiveDevice = activeDev?.inputDeviceId != null && dev.id == activeDev.inputDeviceId
-        val devName = (dev.name ?: "").lowercase()
-        val isDs4Hardware = DS4Constants.isDualShock4(dev.vendorId, dev.productId, dev.name) ||
-                devName.contains("wireless controller") ||
-                devName.contains("dualshock") ||
-                devName.contains("touchpad")
-
-        if (!isMatchingActiveDevice && !isDs4Hardware) {
+        if ((dev.sources and InputDevice.SOURCE_TOUCHSCREEN) != 0) {
+            return false
+        }
+        if (dev.isVirtual && !controllerManager.isSimulationMode.value) {
             return false
         }
 
-        // 3. Ensure input source is touchpad, mouse, or pointer
+        // 2. Must be pointer, mouse, or touchpad input source
         val src = event.source
-        val isTouchpadSource = (src and InputDevice.SOURCE_TOUCHPAD != 0) ||
+        val isPointerSource = (src and InputDevice.SOURCE_TOUCHPAD != 0) ||
                 (src and InputDevice.SOURCE_MOUSE != 0) ||
                 (src and InputDevice.SOURCE_TRACKBALL != 0) ||
                 (src and InputDevice.SOURCE_CLASS_POINTER != 0)
-
-        if (!isTouchpadSource) {
+        if (!isPointerSource) {
             return false
         }
 
+        // If simulation mode is active, allow virtual pointer events
+        if (controllerManager.isSimulationMode.value) {
+            return true
+        }
+
+        // Must have an active controller connected
+        val activeDev = currentDevice.value ?: return false
+
+        // 3. Match device ID or genuine DualShock 4 hardware signature (never match generic touchpads)
+        val isMatchingActiveDevice = activeDev.inputDeviceId != null && dev.id == activeDev.inputDeviceId
+        val devName = (dev.name ?: "").lowercase()
+        val isSonyDs4 = DS4Constants.isDualShock4(dev.vendorId, dev.productId, dev.name)
+        val isDs4Name = devName.contains("wireless controller") || devName.contains("dualshock")
+
+        return isMatchingActiveDevice || isSonyDs4 || isDs4Name
+    }
+
+    private fun isTouchpadOrPointerEvent(event: MotionEvent): Boolean {
+        return isDs4PointerEvent(event)
+    }
+
+    private fun handlePointerOrTouchEvent(event: MotionEvent): Boolean {
+        if (!isDs4PointerEvent(event)) {
+            return false
+        }
+
+        val dev = event.device ?: return false
+        val src = event.source
         val action = event.actionMasked
         val isReleased = action == MotionEvent.ACTION_UP ||
                 action == MotionEvent.ACTION_HOVER_EXIT ||
@@ -504,7 +524,7 @@ class DS4InputRepository(private val context: Context) {
                     normX = (event.x / (if (xRange > 1f) xRange else 1920f)).coerceIn(0f, 1f)
                     normY = (event.y / (if (yRange > 1f) yRange else 942f)).coerceIn(0f, 1f)
                 } else {
-                    // Mouse pointer emulation
+                    // Relative mouse motion from DS4 touchpad
                     val relX = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                         event.getAxisValue(MotionEvent.AXIS_RELATIVE_X)
                     } else 0f
@@ -515,13 +535,8 @@ class DS4InputRepository(private val context: Context) {
                     if (relX != 0f || relY != 0f) {
                         normX = (current.touchpad.x + (relX / 800f)).coerceIn(0.02f, 0.98f)
                         normY = (current.touchpad.y + (relY / 400f)).coerceIn(0.02f, 0.98f)
-                    } else {
-                        val dm = context.resources.displayMetrics
-                        val w = if (dm.widthPixels > 0) dm.widthPixels.toFloat() else 1080f
-                        val h = if (dm.heightPixels > 0) dm.heightPixels.toFloat() else 2400f
-                        normX = (event.x / w).coerceIn(0f, 1f)
-                        normY = (event.y / h).coerceIn(0f, 1f)
                     }
+                    // Never fall back to screen dimensions.
                 }
             }
 
@@ -536,21 +551,17 @@ class DS4InputRepository(private val context: Context) {
                     val yRange = dev.getMotionRange(MotionEvent.AXIS_Y)?.range ?: 942f
                     normX2 = (event.getX(1) / (if (xRange > 1f) xRange else 1920f)).coerceIn(0f, 1f)
                     normY2 = (event.getY(1) / (if (yRange > 1f) yRange else 942f)).coerceIn(0f, 1f)
-                } else {
-                    val dm = context.resources.displayMetrics
-                    val w = if (dm.widthPixels > 0) dm.widthPixels.toFloat() else 1080f
-                    val h = if (dm.heightPixels > 0) dm.heightPixels.toFloat() else 2400f
-                    normX2 = (event.getX(1) / w).coerceIn(0f, 1f)
-                    normY2 = (event.getY(1) / h).coerceIn(0f, 1f)
                 }
             } else if (!isTouching) {
                 normX2 = 0f
                 normY2 = 0f
             }
 
+            val contactId = if (isTouching && event.pointerCount > 0) event.getPointerId(0) else 0
+
             current.copy(
                 buttonTouchpad = isPrimaryClick,
-                touchpad = TouchpadState(
+                touchpad = current.touchpad.copy(
                     x = normX,
                     y = normY,
                     isTouching = isTouching,
@@ -559,7 +570,8 @@ class DS4InputRepository(private val context: Context) {
                     isHardwareSupported = true,
                     x2 = normX2,
                     y2 = normY2,
-                    isTouching2 = hasSecondPointer
+                    isTouching2 = hasSecondPointer,
+                    id = contactId
                 ),
                 touchedInputs = current.touchedInputs + detected,
                 recentEvents = newRecent,

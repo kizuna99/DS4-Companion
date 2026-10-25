@@ -67,6 +67,7 @@ import com.example.ui.screens.LightBarScreen
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
+import android.view.PointerIcon
 import com.example.viewmodel.DS4ViewModel
 
 class MainActivity : ComponentActivity() {
@@ -96,6 +97,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        suppressTouchpadCursor(true)
+    }
+
+    override fun onPause() {
+        super.onPause()
+        suppressTouchpadCursor(false)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        suppressTouchpadCursor(hasFocus)
+    }
+
+    private fun suppressTouchpadCursor(suppress: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            val iconType = if (suppress) PointerIcon.TYPE_NULL else PointerIcon.TYPE_DEFAULT
+            window.decorView.pointerIcon = PointerIcon.getSystemIcon(this, iconType)
+        }
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         // Dispatches controller key presses to input repository
         if (viewModel.handleKeyEvent(event)) {
@@ -105,6 +128,14 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        // If this motion event is from the DS4 physical touchpad / pointer,
+        // process it for the touchpad test and consume it so it does not trigger
+        // hover highlights or scroll behavior across the app UI.
+        if (viewModel.isDs4PointerEvent(event)) {
+            viewModel.handleMotionEvent(event)
+            return true
+        }
+
         // Dispatches controller analog sticks and triggers to input repository
         if (viewModel.handleMotionEvent(event)) {
             return true
@@ -113,11 +144,24 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        // Dispatches controller touchpad touches and physical clicks only.
-        // Phone touchscreen touches must NEVER be routed to the controller touchpad state!
-        if (!event.isFromSource(android.view.InputDevice.SOURCE_TOUCHSCREEN)) {
-            viewModel.handleTouchEvent(event)
+        // 1. Phone touchscreen touches must ALWAYS route directly to the UI and
+        //    must NEVER be delivered to the DS4 touchpad state!
+        val isTouchscreen = event.isFromSource(android.view.InputDevice.SOURCE_TOUCHSCREEN) ||
+                ((event.device?.sources ?: 0) and android.view.InputDevice.SOURCE_TOUCHSCREEN) != 0
+
+        if (isTouchscreen) {
+            return super.dispatchTouchEvent(event)
         }
+
+        // 2. Genuine DS4 physical touchpad events (clicks / contact taps):
+        //    Route to DS4 input repository and consume the event so that
+        //    touchpad presses/clicks do not trigger unintended UI buttons in DS4 Companion.
+        if (viewModel.isDs4PointerEvent(event)) {
+            viewModel.handleTouchEvent(event)
+            return true
+        }
+
+        // 3. Ordinary external mice or non-DS4 pointers interact with the UI normally.
         return super.dispatchTouchEvent(event)
     }
 }

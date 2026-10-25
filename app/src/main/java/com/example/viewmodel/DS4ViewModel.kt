@@ -34,6 +34,8 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
     val diagnosticsState = repository.diagnosticsState
     val isSimulationMode = repository.isSimulationMode
     val batteryState = repository.batteryState
+    val batteryHistory = batteryRepository.batteryHistory
+    val batteryDrainStats = batteryRepository.drainStats
     val motionSensors = repository.motionSensors
 
     // Bluetooth-specific flows
@@ -156,6 +158,18 @@ class DS4ViewModel(application: Application) : AndroidViewModel(application) {
 
     fun handleTouchEvent(event: MotionEvent): Boolean {
         return repository.processTouchEvent(event)
+    }
+
+    fun isDs4PointerEvent(event: MotionEvent): Boolean {
+        return repository.isDs4PointerEvent(event)
+    }
+
+    fun simulateBatteryDrainStep(deltaPct: Int = 1) {
+        batteryRepository.simulateDrainStep(deltaPct)
+    }
+
+    fun clearBatteryHistory() {
+        batteryRepository.clearHistory()
     }
 
     fun toggleSimulation(enabled: Boolean? = null) {

@@ -63,3 +63,20 @@ data class DS4DeviceInfo(
     ),
     val connectedTimestamp: Long = System.currentTimeMillis()
 )
+
+data class BatteryDataPoint(
+    val timestamp: Long,
+    val percentage: Int,
+    val isCharging: Boolean? = false
+)
+
+data class BatteryDrainStats(
+    val startingPercentage: Int? = null,
+    val currentPercentage: Int? = null,
+    val totalDrain: Int = 0,
+    val drainRatePerHour: Float = 0f,
+    val estimatedMinutesRemaining: Int? = null,
+    val sessionDurationMs: Long = 0L,
+    val isCharging: Boolean = false
+)
+

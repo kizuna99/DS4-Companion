@@ -17,7 +17,8 @@ data class TouchpadState(
     val isHardwareSupported: Boolean = true,
     val x2: Float = 0f,
     val y2: Float = 0f,
-    val isTouching2: Boolean = false
+    val isTouching2: Boolean = false,
+    val id: Int = 0
 ) {
     val hardwareX: Int get() = (x * 1920f).toInt().coerceIn(0, 1920)
     val hardwareY: Int get() = (y * 942f).toInt().coerceIn(0, 942)

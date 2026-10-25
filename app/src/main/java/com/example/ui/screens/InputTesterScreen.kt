@@ -69,6 +69,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.model.ConnectionStatus
 import com.example.model.InputLogEvent
 import com.example.model.InputState
 import com.example.model.MotionSensorsState
@@ -104,6 +105,7 @@ fun InputTesterScreen(
 ) {
     val inputState by viewModel.inputState.collectAsStateWithLifecycle()
     val lightBarColor by viewModel.lightBarColor.collectAsStateWithLifecycle()
+    val connectionStatus by viewModel.connectionStatus.collectAsStateWithLifecycle()
 
     LazyColumn(
         modifier = modifier
@@ -371,9 +373,7 @@ fun InputTesterScreen(
                 touchpad = inputState.touchpad,
                 isTouchpadButtonPressed = inputState.buttonTouchpad,
                 lightBarColor = lightBarColor,
-                onSimulateTouch = { x, y, isTouching, isClicked, x2, y2, isTouching2 ->
-                    viewModel.simulateTouchpad(x, y, isTouching, isClicked, x2, y2, isTouching2)
-                }
+                isConnected = connectionStatus == ConnectionStatus.CONNECTED
             )
         }
 
@@ -629,7 +629,7 @@ private fun TouchpadTelemetryCard(
     touchpad: TouchpadState,
     isTouchpadButtonPressed: Boolean,
     lightBarColor: LightBarColor = LightBarColor.PLAYSTATION_BLUE,
-    onSimulateTouch: ((x: Float, y: Float, isTouching: Boolean, isClicked: Boolean, x2: Float, y2: Float, isTouching2: Boolean) -> Unit)? = null,
+    isConnected: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val isClicked = touchpad.isClicked || isTouchpadButtonPressed
@@ -685,20 +685,21 @@ private fun TouchpadTelemetryCard(
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .background(
-                                if (touchpad.touchCount > 0) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                                if (isConnected && touchpad.touchCount > 0) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                                 else MaterialTheme.colorScheme.surfaceVariant
                             )
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
                             text = when {
+                                !isConnected -> "OFFLINE"
                                 touchpad.touchCount >= 2 || touchpad.isTouching2 -> "2 FINGERS"
                                 touchpad.touchCount == 1 || touchpad.isTouching -> "1 FINGER"
                                 else -> "0 TOUCH"
                             },
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
-                            color = if (touchpad.touchCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (isConnected && touchpad.touchCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
@@ -708,6 +709,7 @@ private fun TouchpadTelemetryCard(
                             .clip(RoundedCornerShape(8.dp))
                             .background(
                                 when {
+                                    !isConnected -> MaterialTheme.colorScheme.surfaceVariant
                                     isClicked -> StatusSuccess
                                     touchpad.isTouching -> Color(0xFF00E5FF).copy(alpha = 0.2f)
                                     else -> MaterialTheme.colorScheme.surfaceVariant
@@ -717,6 +719,7 @@ private fun TouchpadTelemetryCard(
                     ) {
                         Text(
                             text = when {
+                                !isConnected -> "DISCONNECTED"
                                 isClicked -> "CLICKED"
                                 touchpad.isTouching -> "ACTIVE"
                                 else -> "IDLE"
@@ -724,6 +727,7 @@ private fun TouchpadTelemetryCard(
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             color = when {
+                                !isConnected -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                                 isClicked -> Color.White
                                 touchpad.isTouching -> MaterialTheme.colorScheme.primary
                                 else -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -733,68 +737,14 @@ private fun TouchpadTelemetryCard(
                 }
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Quick Touchpad Simulation / Test Controls
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedButton(
-                    onClick = {
-                        onSimulateTouch?.invoke(0.35f, 0.45f, true, false, 0f, 0f, false)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("simulate_swipe_button"),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Text("1-Pt Touch", style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        onSimulateTouch?.invoke(0.28f, 0.50f, true, false, 0.72f, 0.50f, true)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("simulate_multi_button"),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Text("2-Pt Touch", style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                }
-
-                Button(
-                    onClick = {
-                        onSimulateTouch?.invoke(touchpad.x, touchpad.y, touchpad.isTouching, !isClicked, touchpad.x2, touchpad.y2, touchpad.isTouching2)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .testTag("simulate_click_button"),
-                    colors = if (isClicked) ButtonDefaults.buttonColors(containerColor = StatusSuccess) else ButtonDefaults.buttonColors(),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Text(if (isClicked) "Release" else "Click Pad", style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                }
-
-                OutlinedButton(
-                    onClick = {
-                        onSimulateTouch?.invoke(0.5f, 0.5f, false, false, 0f, 0f, false)
-                    },
-                    modifier = Modifier
-                        .weight(0.9f)
-                        .testTag("simulate_clear_button"),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                ) {
-                    Text("Clear", style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                }
-            }
-
             Spacer(modifier = Modifier.height(12.dp))
 
             // 2D DualShock 4 Touchpad Visualizer Canvas (~2.04:1 aspect ratio)
+            // Driven strictly by genuine DS4 controller hardware events.
+            // Phone touchscreen gestures are never captured here.
             val barComposeColor = lightBarColor.toComposeColor()
             val borderColor = when {
+                !isConnected -> MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
                 isClicked -> barComposeColor
                 touchpad.isTouching -> Color(0xFF00E5FF)
                 else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
@@ -817,35 +767,6 @@ private fun TouchpadTelemetryCard(
                         color = borderColor,
                         shape = RoundedCornerShape(16.dp)
                     )
-                    .pointerInput(Unit) {
-                        detectDragGestures(
-                            onDragStart = { offset ->
-                                val nx = (offset.x / size.width).coerceIn(0f, 1f)
-                                val ny = (offset.y / size.height).coerceIn(0f, 1f)
-                                onSimulateTouch?.invoke(nx, ny, true, isClicked, 0f, 0f, false)
-                            },
-                            onDrag = { change, _ ->
-                                val nx = (change.position.x / size.width).coerceIn(0f, 1f)
-                                val ny = (change.position.y / size.height).coerceIn(0f, 1f)
-                                onSimulateTouch?.invoke(nx, ny, true, isClicked, 0f, 0f, false)
-                            },
-                            onDragEnd = {
-                                onSimulateTouch?.invoke(touchpad.x, touchpad.y, false, false, 0f, 0f, false)
-                            },
-                            onDragCancel = {
-                                onSimulateTouch?.invoke(touchpad.x, touchpad.y, false, false, 0f, 0f, false)
-                            }
-                        )
-                    }
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onTap = { offset ->
-                                val nx = (offset.x / size.width).coerceIn(0f, 1f)
-                                val ny = (offset.y / size.height).coerceIn(0f, 1f)
-                                onSimulateTouch?.invoke(nx, ny, true, false, 0f, 0f, false)
-                            }
-                        )
-                    }
                     .testTag("touchpad_visualizer_canvas")
             ) {
                 val primaryCyan = Color(0xFF00E5FF)
@@ -1100,7 +1021,7 @@ private fun TouchpadTelemetryCard(
                     }
                 } else if (!touchpad.isTouching && !touchpad.isTouching2) {
                     Text(
-                        text = "Touch Surface • Swipe / Drag to Test",
+                        text = if (!isConnected) "Touchpad Inactive • Connect DualShock 4 Controller" else "Touch Physical Controller Pad • Multi-Touch & Click",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.White.copy(alpha = 0.45f),
                         modifier = Modifier
@@ -1110,7 +1031,7 @@ private fun TouchpadTelemetryCard(
                 }
 
                 // Floating Contact Point Indicator Badges
-                if (touchpad.isTouching || isClicked) {
+                if (isConnected && (touchpad.isTouching || isClicked)) {
                     Box(
                         modifier = Modifier
                             .align(if (touchpad.x > 0.5f) Alignment.TopStart else Alignment.TopEnd)
@@ -1131,7 +1052,7 @@ private fun TouchpadTelemetryCard(
                     }
                 }
 
-                if (touchpad.isTouching2 || touchpad.touchCount >= 2) {
+                if (isConnected && (touchpad.isTouching2 || touchpad.touchCount >= 2)) {
                     Box(
                         modifier = Modifier
                             .align(if (touchpad.x2 > 0.5f) Alignment.BottomStart else Alignment.BottomEnd)
@@ -1162,17 +1083,17 @@ private fun TouchpadTelemetryCard(
             ) {
                 TouchMetricPill(
                     label = "Contact Point 1",
-                    value = if (touchpad.isTouching || isClicked) "${touchpad.hardwareX}, ${touchpad.hardwareY}" else "Idle",
-                    subValue = String.format("X: %.3f  Y: %.3f", touchpad.x, touchpad.y),
-                    isActive = touchpad.isTouching || isClicked,
+                    value = if (isConnected && (touchpad.isTouching || isClicked)) "${touchpad.hardwareX}, ${touchpad.hardwareY}" else if (!isConnected) "Disconnected" else "Idle",
+                    subValue = if (isConnected && (touchpad.isTouching || isClicked)) String.format("X: %.3f  Y: %.3f", touchpad.x, touchpad.y) else if (!isConnected) "No controller" else "Awaiting physical touch",
+                    isActive = isConnected && (touchpad.isTouching || isClicked),
                     modifier = Modifier.weight(1f)
                 )
 
                 TouchMetricPill(
                     label = "Contact Point 2",
-                    value = if (touchpad.isTouching2 || touchpad.touchCount >= 2) "${touchpad.hardwareX2}, ${touchpad.hardwareY2}" else "Standby",
-                    subValue = if (touchpad.isTouching2) String.format("X: %.3f  Y: %.3f", touchpad.x2, touchpad.y2) else "2-Point Multi-touch",
-                    isActive = touchpad.isTouching2 || touchpad.touchCount >= 2,
+                    value = if (isConnected && (touchpad.isTouching2 || touchpad.touchCount >= 2)) "${touchpad.hardwareX2}, ${touchpad.hardwareY2}" else if (!isConnected) "Disconnected" else "Standby",
+                    subValue = if (isConnected && touchpad.isTouching2) String.format("X: %.3f  Y: %.3f", touchpad.x2, touchpad.y2) else "2-Point Multi-touch",
+                    isActive = isConnected && (touchpad.isTouching2 || touchpad.touchCount >= 2),
                     modifier = Modifier.weight(1f)
                 )
             }

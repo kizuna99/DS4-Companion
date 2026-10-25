@@ -102,6 +102,8 @@ fun DashboardScreen(
     val inputState by viewModel.inputState.collectAsStateWithLifecycle()
     val isSimulation by viewModel.isSimulationMode.collectAsStateWithLifecycle()
     val batteryInfo by viewModel.batteryState.collectAsStateWithLifecycle()
+    val batteryHistory by viewModel.batteryHistory.collectAsStateWithLifecycle()
+    val batteryDrainStats by viewModel.batteryDrainStats.collectAsStateWithLifecycle()
 
     var showPairingSteps by remember { mutableStateOf(false) }
 
@@ -151,7 +153,20 @@ fun DashboardScreen(
             }
         }
 
-        // --- 4. Main Connection Control & Action Bar ---
+        // --- 4. Real-Time Battery Drainage Over Time Line Chart ---
+        item {
+            com.example.ui.components.BatteryDrainageChartCard(
+                batteryInfo = batteryInfo,
+                batteryHistory = batteryHistory,
+                drainStats = batteryDrainStats,
+                connectionStatus = connectionStatus,
+                isSimulationMode = isSimulation,
+                onSimulateDrainStep = { viewModel.simulateBatteryDrainStep(2) },
+                onResetHistory = { viewModel.clearBatteryHistory() }
+            )
+        }
+
+        // --- 5. Main Connection Control & Action Bar ---
         item {
             DashboardActionCard(
                 status = connectionStatus,
